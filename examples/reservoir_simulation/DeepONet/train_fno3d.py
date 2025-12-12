@@ -31,6 +31,7 @@ import mlflow.pytorch
 
 from ufno import UFNONet
 from physicsnemo_unet import StandaloneUNet
+from deeponet import UDeepONetWrapper, create_deeponet
 from physicsnemo.distributed import DistributedManager
 from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, LaunchLogger
@@ -210,8 +211,34 @@ def main(cfg: DictConfig) -> None:
         ).to(dist.device)
         model_arch_name = f"unet_{unet_type}"
 
+    elif model_type == "deeponet":
+        # U-DeepONet: Deep Operator Network with U-Net branch
+        logger.info(
+            f"Creating U-DeepONet model (U-Net blocks: {cfg.arch.deeponet.num_unet_blocks}, "
+            f"Trunk layers: {cfg.arch.deeponet.trunk_num_layers})"
+        )
+
+        model = UDeepONetWrapper(
+            padding=cfg.arch.deeponet.padding,
+            in_channels=cfg.arch.deeponet.in_channels,
+            out_channels=cfg.arch.deeponet.out_channels,
+            width=cfg.arch.deeponet.width,
+            num_unet_blocks=cfg.arch.deeponet.num_unet_blocks,
+            unet_kernel_size=cfg.arch.deeponet.unet_kernel_size,
+            unet_dropout=cfg.arch.deeponet.unet_dropout,
+            unet_type=cfg.arch.deeponet.unet_type,
+            trunk_in_features=cfg.arch.deeponet.trunk_in_features,
+            trunk_hidden_width=cfg.arch.deeponet.trunk_hidden_width,
+            trunk_num_layers=cfg.arch.deeponet.trunk_num_layers,
+            trunk_activation=cfg.arch.deeponet.trunk_activation,
+            branch_activation=cfg.arch.deeponet.branch_activation,
+            projection_hidden_width=cfg.arch.deeponet.projection_hidden_width,
+            projection_num_layers=cfg.arch.deeponet.projection_num_layers,
+        ).to(dist.device)
+        model_arch_name = f"deeponet_{cfg.arch.deeponet.unet_type}"
+
     else:
-        raise ValueError(f"Unknown model_type: {model_type}. Use 'ufno' or 'unet'.")
+        raise ValueError(f"Unknown model_type: {model_type}. Use 'ufno', 'unet', or 'deeponet'.")
 
     # Wrap model with DistributedDataParallel for multi-GPU training
     if dist.world_size > 1:
@@ -617,6 +644,27 @@ def main(cfg: DictConfig) -> None:
                                 )
                             elif unet_type == "custom":
                                 model_config["unet_kwargs"] = dict(cfg.arch.unet.custom)
+
+                        elif model_type == "deeponet":
+                            model_config.update(
+                                {
+                                    "in_channels": cfg.arch.deeponet.in_channels,
+                                    "out_channels": cfg.arch.deeponet.out_channels,
+                                    "width": cfg.arch.deeponet.width,
+                                    "padding": cfg.arch.deeponet.padding,
+                                    "num_unet_blocks": cfg.arch.deeponet.num_unet_blocks,
+                                    "unet_kernel_size": cfg.arch.deeponet.unet_kernel_size,
+                                    "unet_dropout": cfg.arch.deeponet.unet_dropout,
+                                    "unet_type": cfg.arch.deeponet.unet_type,
+                                    "trunk_in_features": cfg.arch.deeponet.trunk_in_features,
+                                    "trunk_hidden_width": cfg.arch.deeponet.trunk_hidden_width,
+                                    "trunk_num_layers": cfg.arch.deeponet.trunk_num_layers,
+                                    "trunk_activation": cfg.arch.deeponet.trunk_activation,
+                                    "branch_activation": cfg.arch.deeponet.branch_activation,
+                                    "projection_hidden_width": cfg.arch.deeponet.projection_hidden_width,
+                                    "projection_num_layers": cfg.arch.deeponet.projection_num_layers,
+                                }
+                            )
 
                         torch.save(
                             {
