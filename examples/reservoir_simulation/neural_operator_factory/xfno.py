@@ -31,7 +31,9 @@ from torch import Tensor
 from physicsnemo.models.module import Module
 from physicsnemo.models.layers import (
     SpectralConv3d,
+    SpectralConv4d,
     ConvNdKernel1Layer,
+    ConvNdFCLayer,
     get_activation,
     Conv3dFCLayer,
 )
@@ -431,3 +433,289 @@ class UFNONet(nn.Module):
     def count_params(self) -> int:
         """Count total number of trainable parameters."""
         return self.ufno.count_params()
+
+
+# =============================================================================
+# 4D FNO CLASSES (3D spatial + time)
+# =============================================================================
+# Note: U-Net and Conv skip connections are NOT available for 4D problems
+# because PyTorch does not provide native nn.Conv4d. These classes use only
+# officially supported PhysicsNemo layers: SpectralConv4d, ConvNdKernel1Layer,
+# and ConvNdFCLayer.
+# =============================================================================
+
+
+class FNO4D(Module):
+    """4D Fourier Neural Operator for volumetric (3D space + time) problems.
+
+    Input: (B, X, Y, Z, T, C)
+    Output: (B, X, Y, Z, T, out_channels)
+
+    Architecture:
+    - Lifting network (ConvNdFCLayer)
+    - num_fno_layers Fourier layers (SpectralConv4d + ConvNdKernel1Layer)
+    - Decoder network (ConvNdFCLayer)
+
+    Note: Only pure FNO mode is supported for 4D. U-Net and Conv skip
+    connections are not available because PyTorch has no native Conv4d.
+
+    Parameters
+    ----------
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    width : int
+        Latent channel dimension
+    modes1, modes2, modes3, modes4 : int
+        Number of Fourier modes in each dimension (X, Y, Z, T)
+    num_fno_layers : int
+        Number of Fourier layers
+    activation_fn : str
+        Activation function name
+    lifting_layers : int
+        Number of layers in lifting network
+    decoder_layers : int
+        Number of hidden layers in decoder
+    decoder_width : int
+        Hidden layer size in decoder
+    coord_features : bool
+        Whether to add coordinate features (x, y, z, t)
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        width: int = 32,
+        modes1: int = 8,
+        modes2: int = 8,
+        modes3: int = 6,
+        modes4: int = 6,
+        num_fno_layers: int = 4,
+        activation_fn: str = "gelu",
+        lifting_layers: int = 2,
+        decoder_layers: int = 1,
+        decoder_width: int = 128,
+        coord_features: bool = True,
+    ):
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.width = width
+        self.modes1 = modes1
+        self.modes2 = modes2
+        self.modes3 = modes3
+        self.modes4 = modes4
+        self.num_fno_layers = num_fno_layers
+        self.coord_features = coord_features
+        self.activation_fn = get_activation(activation_fn)
+
+        # Coordinate features add 4 channels (x, y, z, t)
+        lift_in_channels = in_channels + 4 if coord_features else in_channels
+
+        # Lifting network using ConvNdFCLayer (supports arbitrary dimensions)
+        self.lift_network = self._build_lifting_network(
+            lift_in_channels, width, lifting_layers
+        )
+
+        # Fourier layers: SpectralConv4d + ConvNdKernel1Layer
+        self.spectral_convs = nn.ModuleList()
+        self.conv_1x1s = nn.ModuleList()
+
+        for _ in range(num_fno_layers):
+            self.spectral_convs.append(
+                SpectralConv4d(self.width, self.width, modes1, modes2, modes3, modes4)
+            )
+            self.conv_1x1s.append(ConvNdKernel1Layer(self.width, self.width))
+
+        # Decoder network using ConvNdFCLayer
+        self.decoder = self._build_decoder_network(
+            width, out_channels, decoder_layers, decoder_width
+        )
+
+    def _build_lifting_network(
+        self, in_channels: int, width: int, num_layers: int
+    ) -> nn.Module:
+        """Build lifting network using ConvNdFCLayer."""
+        if num_layers == 1:
+            return ConvNdFCLayer(in_channels, width)
+        else:
+            layers_list = []
+            hidden_width = width // 2
+            layers_list.append(ConvNdFCLayer(in_channels, hidden_width))
+            layers_list.append(self.activation_fn)
+            for _ in range(num_layers - 2):
+                layers_list.append(ConvNdFCLayer(hidden_width, hidden_width))
+                layers_list.append(self.activation_fn)
+            layers_list.append(ConvNdFCLayer(hidden_width, width))
+            return nn.Sequential(*layers_list)
+
+    def _build_decoder_network(
+        self, width: int, out_channels: int, num_layers: int, hidden_width: int
+    ) -> nn.Module:
+        """Build decoder network using ConvNdFCLayer."""
+        if num_layers == 0:
+            return ConvNdFCLayer(width, out_channels)
+        else:
+            layers_list = []
+            in_ch = width
+            for _ in range(num_layers):
+                layers_list.append(ConvNdFCLayer(in_ch, hidden_width))
+                layers_list.append(self.activation_fn)
+                in_ch = hidden_width
+            layers_list.append(ConvNdFCLayer(hidden_width, out_channels))
+            return nn.Sequential(*layers_list)
+
+    def _create_meshgrid(self, shape: list, device: torch.device) -> Tensor:
+        """Create 4D coordinate meshgrid (x, y, z, t) normalized to [0, 1]."""
+        bsize = shape[0]
+        size_x, size_y, size_z, size_t = shape[2], shape[3], shape[4], shape[5]
+
+        grid_x = torch.linspace(0, 1, size_x, dtype=torch.float32, device=device)
+        grid_y = torch.linspace(0, 1, size_y, dtype=torch.float32, device=device)
+        grid_z = torch.linspace(0, 1, size_z, dtype=torch.float32, device=device)
+        grid_t = torch.linspace(0, 1, size_t, dtype=torch.float32, device=device)
+
+        grid_x, grid_y, grid_z, grid_t = torch.meshgrid(
+            grid_x, grid_y, grid_z, grid_t, indexing="ij"
+        )
+
+        grid_x = grid_x.unsqueeze(0).unsqueeze(0).expand(bsize, 1, -1, -1, -1, -1)
+        grid_y = grid_y.unsqueeze(0).unsqueeze(0).expand(bsize, 1, -1, -1, -1, -1)
+        grid_z = grid_z.unsqueeze(0).unsqueeze(0).expand(bsize, 1, -1, -1, -1, -1)
+        grid_t = grid_t.unsqueeze(0).unsqueeze(0).expand(bsize, 1, -1, -1, -1, -1)
+
+        return torch.cat((grid_x, grid_y, grid_z, grid_t), dim=1)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through FNO4D.
+        
+        Input: (B, X, Y, Z, T, C)
+        Output: (B, X, Y, Z, T, out_channels)
+        """
+        # Convert to channel-first: (B, C, X, Y, Z, T)
+        x = x.permute(0, 5, 1, 2, 3, 4)
+
+        # Add coordinate features
+        if self.coord_features:
+            coord_feat = self._create_meshgrid(list(x.shape), x.device)
+            x = torch.cat((x, coord_feat), dim=1)
+
+        # Lifting
+        x = self.lift_network(x)
+
+        # Fourier layers
+        for layer_idx in range(self.num_fno_layers):
+            x1 = self.spectral_convs[layer_idx](x)
+            x2 = self.conv_1x1s[layer_idx](x)
+            if layer_idx < self.num_fno_layers - 1:
+                x = self.activation_fn(x1 + x2)
+            else:
+                x = x1 + x2
+
+        # Decoder
+        x = self.decoder(x)
+
+        # Convert to channel-last: (B, X, Y, Z, T, out_channels)
+        x = x.permute(0, 2, 3, 4, 5, 1)
+        return x
+
+    def count_params(self) -> int:
+        """Count total number of trainable parameters."""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+class FNO4DNet(nn.Module):
+    """Wrapper for FNO4D that handles padding/de-padding.
+
+    Input: (B, X, Y, Z, T, C)
+    Output: (B, X, Y, Z, T)
+
+    Parameters
+    ----------
+    modes1, modes2, modes3, modes4 : int
+        Number of Fourier modes in each dimension
+    width : int
+        Latent channel dimension
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    num_fno_layers : int
+        Number of Fourier layers
+    padding : int or list
+        Padding for each dimension (X, Y, Z, T)
+    **kwargs
+        Additional arguments passed to FNO4D
+    """
+
+    def __init__(
+        self,
+        modes1: int,
+        modes2: int,
+        modes3: int,
+        modes4: int,
+        width: int,
+        in_channels: int = 11,
+        out_channels: int = 1,
+        num_fno_layers: int = 4,
+        padding: int = 8,
+        **kwargs,
+    ):
+        super(FNO4DNet, self).__init__()
+
+        # Store padding for each dimension (X, Y, Z, T)
+        if isinstance(padding, int):
+            self.padding = [padding, padding, padding, padding]
+        else:
+            self.padding = list(padding) + [0] * (4 - len(padding))
+            self.padding = self.padding[:4]
+
+        self.fno4d = FNO4D(
+            modes1=modes1,
+            modes2=modes2,
+            modes3=modes3,
+            modes4=modes4,
+            width=width,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_fno_layers=num_fno_layers,
+            **kwargs,
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward pass with padding/de-padding.
+
+        Input: (B, X, Y, Z, T, C)
+        Output: (B, X, Y, Z, T)
+        """
+        pad_x, pad_y, pad_z, pad_t = self.padding
+
+        # Pad: F.pad operates on last dimensions first
+        # Order: (channel_left, channel_right, T_left, T_right, Z_left, Z_right, ...)
+        x = F.pad(
+            x,
+            (0, 0, 0, pad_t, 0, pad_z, 0, pad_y, 0, pad_x),
+            mode="replicate",
+        )
+
+        x = self.fno4d(x)
+
+        # Remove padding
+        if pad_x > 0:
+            x = x[:, :-pad_x, :, :, :, :]
+        if pad_y > 0:
+            x = x[:, :, :-pad_y, :, :, :]
+        if pad_z > 0:
+            x = x[:, :, :, :-pad_z, :, :]
+        if pad_t > 0:
+            x = x[:, :, :, :, :-pad_t, :]
+
+        # Squeeze channel dimension: (B, X, Y, Z, T, 1) -> (B, X, Y, Z, T)
+        return x.squeeze(-1)
+
+    def count_params(self) -> int:
+        """Count total number of trainable parameters."""
+        return self.fno4d.count_params()
