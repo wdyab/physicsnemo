@@ -1,0 +1,138 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Model Architecture and Loss Configuration
+# 
+# ============================================================================
+# DeepONet Branch Configuration (like xfno.py)
+# ============================================================================
+#
+# Branch types:
+# - mlp: Pure MLP layers (for scalar inputs)
+# - spatial: Unified spatial branch (configure with layer counts)
+#
+# Spatial branch layer behavior:
+# - If num_fourier_layers > 0: UNet/Conv layers get Fourier base (xfno.py style)
+# - If num_fourier_layers = 0: UNet/Conv layers are pure (no Fourier)
+#
+# Examples:
+# - Pure UNet: num_fourier_layers=0, num_unet_layers=3 (original U-DeepONet)
+# - Pure Fourier: num_fourier_layers=4, num_unet_layers=0, num_conv_layers=0
+# - Pure Conv: num_fourier_layers=0, num_unet_layers=0, num_conv_layers=3
+# - U-FNO style: num_fourier_layers=2, num_unet_layers=3 (2 Fourier + 3 Fourier+UNet)
+# - Conv-FNO: num_fourier_layers=2, num_conv_layers=3 (2 Fourier + 3 Fourier+Conv)
+
+arch:
+  # Model type selection
+  # Options: "ufno" (Fourier + U-Net), "unet" (pure U-Net), "deeponet" (DeepONet variants)
+  model_type: deeponet
+  
+  ufno:
+    out_channels: 1
+    width: 36
+    modes1: 10
+    modes2: 10
+    modes3: 10
+    num_fno_layers: 3
+    num_unet_layers: 3
+    num_conv_layers: 0
+    padding: 8
+    conv_kernel_size: 3
+    unet_kernel_size: 3
+    unet_dropout: 0.0
+    unet_type: physicsnemo
+    activation_fn: relu
+    lifting_type: mlp
+    lifting_layers: 1
+    lifting_width: 2
+    decoder_type: mlp
+    decoder_layers: 1
+    decoder_width: 128
+    decoder_activation_fn: relu
+  
+  unet:
+    out_channels: 1
+    unet_type: physicsnemo
+    
+    physicsnemo:
+      kernel_size: 3
+      stride: 1
+      model_depth: 3
+      feature_map_channels: [36, 36, 36]
+      num_conv_blocks: 1
+      conv_activation: relu
+      conv_transpose_activation: relu
+      padding: 1
+      padding_mode: zeros
+      pooling_type: MaxPool3d
+      pool_size: 2
+      normalization: batchnorm
+      use_attn_gate: false
+      gradient_checkpointing: false
+    
+    custom:
+      kernel_size: 3
+      dropout_rate: 0.0
+
+  # ============================================================================
+  # DeepONet Configuration
+  # ============================================================================
+  deeponet:
+    variant: u_deeponet     # Model variant
+    
+    width: 128              # Latent feature dimension
+    padding: 8              # Spatial padding for U-Net compatibility
+    
+    # -------------------------------------------------------------------------
+    # Branch 1: Spatial branch (original U-DeepONet with 3 pure UNet layers)
+    # -------------------------------------------------------------------------
+    branch1:
+      type: spatial
+      # in_channels: 12     # Auto-inferred from input tensor shape
+      num_fourier_layers: 0 # 0 = pure UNet/Conv (no Fourier base)
+      num_unet_layers: 3    # 3 consecutive U-Net blocks
+      num_conv_layers: 0
+      kernel_size: 3
+      dropout: 0.0
+      unet_impl: custom     # 'custom' (unet.py) or 'physicsnemo'
+      activation_fn: sin
+      # modes1: 12          # Only needed if num_fourier_layers > 0
+      # modes2: 12
+    
+    # -------------------------------------------------------------------------
+    # Branch 2: Not used for single-branch variants (u_deeponet, etc.)
+    # -------------------------------------------------------------------------
+    # Required for mionet variants
+    branch2:
+      type: mlp
+      in_features: 5
+      hidden_width: 64
+      num_layers: 3
+      activation_fn: relu
+    
+    # -------------------------------------------------------------------------
+    # Trunk: MLP that processes temporal/spatial coordinates
+    # -------------------------------------------------------------------------
+    trunk:
+      input_type: grid      # 'time' (1 feature) or 'grid' (x, y, t = 3 features)
+      hidden_width: 128
+      num_layers: 6
+      activation_fn: sin
+    
+    # -------------------------------------------------------------------------
+    # Decoder: projects combined features to output
+    # -------------------------------------------------------------------------
+    decoder_type: mlp
+    decoder_width: 128
+    decoder_layers: 2
+    decoder_activation_fn: relu
+
+# Loss function configuration
+loss:
+  base_loss_type: relative_l2
+  reduction: mean
+  use_mask: true
+  use_derivative: false
+  derivative_weight: 0.5
+  derivative_dim: dx

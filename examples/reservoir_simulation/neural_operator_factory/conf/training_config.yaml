@@ -1,0 +1,58 @@
+# Training Configuration for U-DeepONet on Saturation (8 GPU)
+
+defaults:
+  - model_config
+  - _self_
+
+hydra:
+  job:
+    chdir: False
+  run:
+    dir: ./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+data:
+  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
+  variable: saturation
+  normalize: false
+  num_workers: 4
+
+training:
+  batch_size: 4
+  epochs: 100
+  initial_lr: 0.001
+  checkpoint_freq: 10
+  checkpoint_dir: ./checkpoints
+  validate_freq: 5
+  early_stopping: true
+  patience: 20
+  use_amp: false
+  use_graphs: true
+
+optimizer:
+  type: adam
+  weight_decay: 0.0001
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+scheduler:
+  type: step
+  step_size: 10
+  gamma: 0.85
+  min_lr: 1.0e-6
+
+logging:
+  console_freq: 10
+  use_tensorboard: true
+  tensorboard_dir: ./tensorboard
+  use_mlflow: false
+  experiment_name: u_deeponet_saturation
+  use_wandb: false
+
+seed: 42
+
+compute:
+  device: cuda
+  num_gpus: 8
+  distributed: true
+  benchmark: false
+  deterministic: true
