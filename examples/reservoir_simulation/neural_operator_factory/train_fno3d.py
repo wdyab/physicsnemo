@@ -29,10 +29,11 @@ import numpy as np
 import mlflow
 import mlflow.pytorch
 
-from xfno import UFNONet
+from xfno import UFNONet, FNO4DNet
 from physicsnemo_unet import StandaloneUNet
+from deeponet import DeepONetWrapper, DeepONet3DWrapper
 
-def print_model_architecture(model, model_type: str, cfg, logger):
+def print_model_architecture(model, model_type: str, dimensions: str, cfg, logger):
     """Print detailed model architecture for any model type."""
     logger.info("=" * 80)
     logger.info("MODEL ARCHITECTURE")
@@ -44,34 +45,39 @@ def print_model_architecture(model, model_type: str, cfg, logger):
     else:
         actual_model = model
     
-    # Print model type and variant
+    # Print model type and dimensions
+    logger.info(f"Dimensions: {dimensions.upper()}")
     logger.info(f"Model Type: {model_type.upper()}")
     
-    if model_type == "deeponet":
-        variant = cfg.arch.deeponet.get("variant", "u_deeponet")
+    if model_type == "xdeeponet":
+        variant = cfg.arch.xdeeponet.get("variant", "u_deeponet")
         logger.info(f"Variant: {variant}")
         logger.info("")
         
         # Branch configuration
-        branch1_cfg = cfg.arch.deeponet.get("branch1", {})
+        branch1_cfg = cfg.arch.xdeeponet.get("branch1", {})
         logger.info(f"Branch 1:")
-        logger.info(f"  Type: {branch1_cfg.get('type', 'unet')}")
+        logger.info(f"  Type: {branch1_cfg.get('type', 'spatial')}")
         logger.info(f"  In Channels: auto (inferred from input tensor)")
-        logger.info(f"  Num Layers: {branch1_cfg.get('num_layers', 3)}")
+        logger.info(f"  Fourier Layers: {branch1_cfg.get('num_fourier_layers', 0)}")
+        logger.info(f"  UNet Layers: {branch1_cfg.get('num_unet_layers', 0)}")
+        logger.info(f"  Conv Layers: {branch1_cfg.get('num_conv_layers', 0)}")
         logger.info(f"  Activation: {branch1_cfg.get('activation_fn', 'sin')}")
         
         if variant in ['mionet', 'fourier_mionet']:
-            branch2_cfg = cfg.arch.deeponet.get("branch2", {})
+            branch2_cfg = cfg.arch.xdeeponet.get("branch2", {})
             logger.info(f"Branch 2:")
             logger.info(f"  Type: {branch2_cfg.get('type', 'mlp')}")
+            logger.info(f"  In Features: auto (inferred from input)")
             logger.info(f"  Activation: {branch2_cfg.get('activation_fn', 'relu')}")
         
         # Trunk configuration
-        trunk_cfg = cfg.arch.deeponet.get("trunk", {})
+        trunk_cfg = cfg.arch.xdeeponet.get("trunk", {})
         trunk_input = trunk_cfg.get('input_type', 'time')
-        in_features = 3 if trunk_input == 'grid' else trunk_cfg.get('in_features', 1)
+        in_features = (4 if dimensions == '4d' else 3) if trunk_input == 'grid' else 1
+        coord_desc = 'x,y,z,t' if dimensions == '4d' else 'x,y,t'
         logger.info(f"Trunk:")
-        logger.info(f"  Input Type: {trunk_input} ({'x, y, t' if trunk_input == 'grid' else 'just t'})")
+        logger.info(f"  Input Type: {trunk_input} ({coord_desc if trunk_input == 'grid' else 'just t'})")
         logger.info(f"  In Features: {in_features}")
         logger.info(f"  Hidden Width: {trunk_cfg.get('hidden_width', 128)}")
         logger.info(f"  Num Layers: {trunk_cfg.get('num_layers', 6)}")
@@ -79,30 +85,31 @@ def print_model_architecture(model, model_type: str, cfg, logger):
         
         # Decoder configuration
         logger.info(f"Decoder:")
-        logger.info(f"  Type: {cfg.arch.deeponet.get('decoder_type', 'mlp')}")
-        logger.info(f"  Width: {cfg.arch.deeponet.get('decoder_width', 128)}")
-        logger.info(f"  Layers: {cfg.arch.deeponet.get('decoder_layers', 2)}")
-        logger.info(f"  Activation: {cfg.arch.deeponet.get('decoder_activation_fn', 'relu')}")
+        logger.info(f"  Type: {cfg.arch.xdeeponet.get('decoder_type', 'mlp')}")
+        logger.info(f"  Width: {cfg.arch.xdeeponet.get('decoder_width', 128)}")
+        logger.info(f"  Layers: {cfg.arch.xdeeponet.get('decoder_layers', 2)}")
+        logger.info(f"  Activation: {cfg.arch.xdeeponet.get('decoder_activation_fn', 'relu')}")
         
-        logger.info(f"Latent Width: {cfg.arch.deeponet.get('width', 64)}")
-        logger.info(f"Padding: {cfg.arch.deeponet.get('padding', 8)}")
+        logger.info(f"Latent Width: {cfg.arch.xdeeponet.get('width', 64)}")
+        logger.info(f"Padding: {cfg.arch.xdeeponet.get('padding', 8)}")
         
-    elif model_type == "ufno":
-        logger.info(f"In Channels: {cfg.arch.ufno.in_channels}")
-        logger.info(f"Out Channels: {cfg.arch.ufno.out_channels}")
-        logger.info(f"Width: {cfg.arch.ufno.width}")
-        logger.info(f"Modes: ({cfg.arch.ufno.modes1}, {cfg.arch.ufno.modes2}, {cfg.arch.ufno.modes3})")
-        logger.info(f"FNO Layers: {cfg.arch.ufno.num_fno_layers}")
-        logger.info(f"U-Net Layers: {cfg.arch.ufno.num_unet_layers}")
-        logger.info(f"Conv Layers: {cfg.arch.ufno.num_conv_layers}")
-        logger.info(f"Activation: {cfg.arch.ufno.activation_fn}")
-        logger.info(f"Lifting: type={cfg.arch.ufno.lifting_type}, layers={cfg.arch.ufno.lifting_layers}")
-        logger.info(f"Decoder: type={cfg.arch.ufno.decoder_type}, layers={cfg.arch.ufno.decoder_layers}, activation={cfg.arch.ufno.get('decoder_activation_fn', 'N/A')}")
-        
-    elif model_type == "unet":
-        logger.info(f"In Channels: {cfg.arch.unet.in_channels}")
-        logger.info(f"Out Channels: {cfg.arch.unet.out_channels}")
-        logger.info(f"U-Net Type: {cfg.arch.unet.unet_type}")
+    elif model_type == "xfno":
+        xfno_cfg = cfg.arch.xfno
+        logger.info(f"Out Channels: {xfno_cfg.out_channels}")
+        logger.info(f"Width: {xfno_cfg.width}")
+        if dimensions == '4d':
+            logger.info(f"Modes: ({xfno_cfg.modes1}, {xfno_cfg.modes2}, {xfno_cfg.modes3}, {xfno_cfg.modes4})")
+        else:
+            logger.info(f"Modes: ({xfno_cfg.modes1}, {xfno_cfg.modes2}, {xfno_cfg.modes3})")
+        logger.info(f"FNO Layers: {xfno_cfg.num_fno_layers}")
+        if dimensions == '3d':
+            logger.info(f"U-Net Layers: {xfno_cfg.num_unet_layers}")
+            logger.info(f"Conv Layers: {xfno_cfg.num_conv_layers}")
+            logger.info(f"Lifting: type={xfno_cfg.lifting_type}, layers={xfno_cfg.lifting_layers}")
+        else:
+            logger.info(f"Coord Features: {xfno_cfg.coord_features}")
+        logger.info(f"Activation: {xfno_cfg.activation_fn}")
+        logger.info(f"Decoder: layers={xfno_cfg.decoder_layers}, width={xfno_cfg.decoder_width}")
     
     # Print full model structure
     logger.info("")
@@ -124,7 +131,6 @@ def print_model_architecture(model, model_type: str, cfg, logger):
     logger.info("=" * 80)
 
 
-from deeponet import DeepONetWrapper, DeepONet
 from physicsnemo.distributed import DistributedManager
 from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, LaunchLogger
@@ -173,12 +179,15 @@ def main(cfg: DictConfig) -> None:
 
     # Print header (only on rank 0)
     if dist.rank == 0:
-        model_name = cfg.arch.model_type.upper()
-        if cfg.arch.model_type == "deeponet":
-            model_name = cfg.arch.deeponet.variant.replace("_", "-").upper()
+        dimensions = cfg.arch.dimensions.lower()
+        model_type = cfg.arch.model.lower()
+        if model_type == "xdeeponet":
+            model_name = cfg.arch.xdeeponet.variant.replace("_", "-").upper()
+        else:
+            model_name = model_type.upper()
         logger.info("=" * 80)
         logger.info(
-            f"{model_name} Training | Variable: {cfg.data.variable} | GPUs: {dist.world_size}"
+            f"{model_name} ({dimensions.upper()}) Training | Variable: {cfg.data.variable} | GPUs: {dist.world_size}"
         )
         logger.info("=" * 80)
 
@@ -224,120 +233,135 @@ def main(cfg: DictConfig) -> None:
             logger=logger,
         )
 
-    # Create model based on model_type
-    model_type = cfg.arch.model_type.lower()
+    # Create model based on dimensions and model type
+    dimensions = cfg.arch.dimensions.lower()
+    model_type = cfg.arch.model.lower()
+    
+    # Get in_channels from first batch (for auto-discovery)
+    sample_inputs, _ = next(iter(train_loader))
+    in_channels = sample_inputs.shape[-1]  # Last dimension is channels
 
-    if model_type == "ufno":
-        # U-FNO or Conv-FNO: Fourier layers + enhancement
-        num_unet = cfg.arch.ufno.num_unet_layers
-        num_conv = cfg.arch.ufno.num_conv_layers
-
-        if num_unet > 0 and num_conv > 0:
-            # Conv-U-FNO: Both U-Net and Conv layers (not recommended but possible)
-            logger.warning(
-                "⚠️  WARNING: Using both U-Net and Conv layers (Conv-U-FNO). This is not recommended but supported."
-            )
-            logger.warning(
-                "⚠️  Consider using either U-FNO (num_conv_layers=0) or Conv-FNO (num_unet_layers=0) for better performance."
-            )
+    if model_type == "xfno":
+        xfno_cfg = cfg.arch.xfno
+        
+        if dimensions == "4d":
+            # 4D FNO (3D spatial + time) - Pure FNO only
             logger.info(
-                f"Creating Conv-U-FNO model (FNO: {cfg.arch.ufno.num_fno_layers}, U-Net: {num_unet}, Conv: {num_conv})"
+                f"Creating FNO4D model (FNO layers: {xfno_cfg.num_fno_layers}, "
+                f"modes: [{xfno_cfg.modes1}, {xfno_cfg.modes2}, {xfno_cfg.modes3}, {xfno_cfg.modes4}])"
             )
-            model_arch_name = f"convufno_{cfg.arch.ufno.unet_type}"
-        elif num_unet > 0:
-            # U-FNO
-            logger.info(
-                f"Creating U-FNO model (FNO layers: {cfg.arch.ufno.num_fno_layers}, U-Net layers: {num_unet}, U-Net type: {cfg.arch.ufno.unet_type})"
-            )
-            model_arch_name = f"ufno_{cfg.arch.ufno.unet_type}"
-        elif num_conv > 0:
-            # Conv-FNO
-            logger.info(
-                f"Creating Conv-FNO model (FNO layers: {cfg.arch.ufno.num_fno_layers}, Conv layers: {num_conv})"
-            )
-            model_arch_name = "convfno"
+            model = FNO4DNet(
+                in_channels=in_channels,
+                out_channels=xfno_cfg.out_channels,
+                width=xfno_cfg.width,
+                modes1=xfno_cfg.modes1,
+                modes2=xfno_cfg.modes2,
+                modes3=xfno_cfg.modes3,
+                modes4=xfno_cfg.modes4,
+                num_fno_layers=xfno_cfg.num_fno_layers,
+                padding=xfno_cfg.padding,
+                activation_fn=xfno_cfg.activation_fn,
+                lifting_layers=xfno_cfg.lifting_layers,
+                decoder_layers=xfno_cfg.decoder_layers,
+                decoder_width=xfno_cfg.decoder_width,
+                coord_features=xfno_cfg.coord_features,
+            ).to(dist.device)
+            model_arch_name = "fno4d"
         else:
-            # Standard FNO
+            # 3D FNO (2D spatial + time) - With optional U-Net/Conv
+            num_unet = xfno_cfg.num_unet_layers
+            num_conv = xfno_cfg.num_conv_layers
+
+            if num_unet > 0 and num_conv > 0:
+                logger.warning("⚠️  Using both U-Net and Conv layers (Conv-U-FNO).")
+                model_arch_name = f"convufno_{xfno_cfg.unet_type}"
+            elif num_unet > 0:
+                model_arch_name = f"ufno_{xfno_cfg.unet_type}"
+            elif num_conv > 0:
+                model_arch_name = "convfno"
+            else:
+                model_arch_name = "fno"
+
             logger.info(
-                f"Creating standard FNO model (FNO layers: {cfg.arch.ufno.num_fno_layers})"
+                f"Creating {model_arch_name.upper()} model (FNO: {xfno_cfg.num_fno_layers}, "
+                f"U-Net: {num_unet}, Conv: {num_conv})"
             )
-            model_arch_name = "fno"
 
-        model = UFNONet(
-            in_channels=cfg.arch.ufno.in_channels,
-            out_channels=cfg.arch.ufno.out_channels,
-            width=cfg.arch.ufno.width,
-            modes1=cfg.arch.ufno.modes1,
-            modes2=cfg.arch.ufno.modes2,
-            modes3=cfg.arch.ufno.modes3,
-            num_fno_layers=cfg.arch.ufno.num_fno_layers,
-            num_unet_layers=num_unet,
-            num_conv_layers=num_conv,
-            padding=cfg.arch.ufno.padding,
-            conv_kernel_size=cfg.arch.ufno.conv_kernel_size,
-            unet_kernel_size=cfg.arch.ufno.unet_kernel_size,
-            unet_dropout=cfg.arch.ufno.unet_dropout,
-            unet_type=cfg.arch.ufno.unet_type,
-            activation_fn=cfg.arch.ufno.activation_fn,
-            lifting_type=cfg.arch.ufno.lifting_type,
-            lifting_layers=cfg.arch.ufno.lifting_layers,
-            lifting_width=cfg.arch.ufno.lifting_width,
-            decoder_type=cfg.arch.ufno.decoder_type,
-            decoder_layers=cfg.arch.ufno.decoder_layers,
-            decoder_width=cfg.arch.ufno.decoder_width,
-            decoder_activation_fn=cfg.arch.ufno.get("decoder_activation_fn", None),
-        ).to(dist.device)
+            model = UFNONet(
+                in_channels=in_channels,
+                out_channels=xfno_cfg.out_channels,
+                width=xfno_cfg.width,
+                modes1=xfno_cfg.modes1,
+                modes2=xfno_cfg.modes2,
+                modes3=xfno_cfg.modes3,
+                num_fno_layers=xfno_cfg.num_fno_layers,
+                num_unet_layers=num_unet,
+                num_conv_layers=num_conv,
+                padding=xfno_cfg.padding,
+                conv_kernel_size=xfno_cfg.conv_kernel_size,
+                unet_kernel_size=xfno_cfg.unet_kernel_size,
+                unet_dropout=xfno_cfg.unet_dropout,
+                unet_type=xfno_cfg.unet_type,
+                activation_fn=xfno_cfg.activation_fn,
+                lifting_type=xfno_cfg.lifting_type,
+                lifting_layers=xfno_cfg.lifting_layers,
+                lifting_width=xfno_cfg.lifting_width,
+                decoder_type=xfno_cfg.decoder_type,
+                decoder_layers=xfno_cfg.decoder_layers,
+                decoder_width=xfno_cfg.decoder_width,
+                decoder_activation_fn=xfno_cfg.get("decoder_activation_fn", None),
+            ).to(dist.device)
 
-    elif model_type == "unet":
-        # Standalone U-Net (no Fourier layers)
-        unet_type = cfg.arch.unet.unet_type
-        logger.info(f"Creating standalone U-Net model (type: {unet_type})")
-
-        if unet_type == "physicsnemo":
-            unet_kwargs = dict(cfg.arch.unet.physicsnemo)
-        elif unet_type == "custom":
-            unet_kwargs = dict(cfg.arch.unet.custom)
-        else:
-            raise ValueError(f"Unknown unet_type: {unet_type}")
-
-        model = StandaloneUNet(
-            in_channels=cfg.arch.unet.in_channels,
-            out_channels=cfg.arch.unet.out_channels,
-            unet_type=unet_type,
-            **unet_kwargs,
-        ).to(dist.device)
-        model_arch_name = f"unet_{unet_type}"
-
-    elif model_type == "deeponet":
-        # DeepONet variants: deeponet, u_deeponet, fourier_deeponet, mionet, fourier_mionet
-        variant = cfg.arch.deeponet.variant
-        logger.info(
-            f"Creating DeepONet model (variant: {variant}, "
-            f"branch1: {cfg.arch.deeponet.branch1.type}, "
-            f"width: {cfg.arch.deeponet.width})"
-        )
+    elif model_type == "xdeeponet":
+        xdeeponet_cfg = cfg.arch.xdeeponet
+        variant = xdeeponet_cfg.variant
         
         # Build branch configs from yaml
-        branch1_config = dict(cfg.arch.deeponet.branch1)
-        branch2_config = dict(cfg.arch.deeponet.branch2) if variant in ['mionet', 'fourier_mionet'] else None
-        trunk_config = dict(cfg.arch.deeponet.trunk)
+        branch1_config = dict(xdeeponet_cfg.branch1)
+        branch2_config = dict(xdeeponet_cfg.branch2) if variant in ['mionet', 'fourier_mionet'] else None
+        trunk_config = dict(xdeeponet_cfg.trunk)
         
-        model = DeepONetWrapper(
-            padding=cfg.arch.deeponet.padding,
-            variant=variant,
-            width=cfg.arch.deeponet.width,
-            branch1_config=branch1_config,
-            branch2_config=branch2_config,
-            trunk_config=trunk_config,
-            decoder_type=cfg.arch.deeponet.get("decoder_type", "mlp"),
-            decoder_width=cfg.arch.deeponet.decoder_width,
-            decoder_layers=cfg.arch.deeponet.decoder_layers,
-            decoder_activation_fn=cfg.arch.deeponet.get("decoder_activation_fn", "relu"),
-        ).to(dist.device)
-        model_arch_name = f"{variant}_{cfg.arch.deeponet.branch1.type}"
+        if dimensions == "4d":
+            # 4D DeepONet (3D spatial + time)
+            logger.info(
+                f"Creating DeepONet3D model (variant: {variant}, "
+                f"branch1: {branch1_config.get('type', 'spatial')}, width: {xdeeponet_cfg.width})"
+            )
+            model = DeepONet3DWrapper(
+                padding=xdeeponet_cfg.padding,
+                variant=variant,
+                width=xdeeponet_cfg.width,
+                branch1_config=branch1_config,
+                branch2_config=branch2_config,
+                trunk_config=trunk_config,
+                decoder_type=xdeeponet_cfg.get("decoder_type", "mlp"),
+                decoder_width=xdeeponet_cfg.decoder_width,
+                decoder_layers=xdeeponet_cfg.decoder_layers,
+                decoder_activation_fn=xdeeponet_cfg.get("decoder_activation_fn", "relu"),
+            ).to(dist.device)
+            model_arch_name = f"deeponet3d_{variant}_{branch1_config.get('type', 'spatial')}"
+        else:
+            # 3D DeepONet (2D spatial + time)
+            logger.info(
+                f"Creating DeepONet model (variant: {variant}, "
+                f"branch1: {branch1_config.get('type', 'spatial')}, width: {xdeeponet_cfg.width})"
+            )
+            model = DeepONetWrapper(
+                padding=xdeeponet_cfg.padding,
+                variant=variant,
+                width=xdeeponet_cfg.width,
+                branch1_config=branch1_config,
+                branch2_config=branch2_config,
+                trunk_config=trunk_config,
+                decoder_type=xdeeponet_cfg.get("decoder_type", "mlp"),
+                decoder_width=xdeeponet_cfg.decoder_width,
+                decoder_layers=xdeeponet_cfg.decoder_layers,
+                decoder_activation_fn=xdeeponet_cfg.get("decoder_activation_fn", "relu"),
+            ).to(dist.device)
+            model_arch_name = f"deeponet_{variant}_{branch1_config.get('type', 'spatial')}"
 
     else:
-        raise ValueError(f"Unknown model_type: {model_type}. Use 'ufno', 'unet', or 'deeponet'.")
+        raise ValueError(f"Unknown model: {model_type}. Use 'xfno' or 'xdeeponet'.")
 
     # Wrap model with DistributedDataParallel for multi-GPU training
     if dist.world_size > 1:
@@ -363,7 +387,7 @@ def main(cfg: DictConfig) -> None:
             f"Model: {model.__class__.__name__} | Parameters: {trainable_params:,}"
         )
         # Print detailed model architecture
-        print_model_architecture(model, model_type, cfg, logger)
+        print_model_architecture(model, model_type, dimensions, cfg, logger)
 
     # Create training loss function
     loss_fn = get_loss_function(cfg.loss)
@@ -437,44 +461,50 @@ def main(cfg: DictConfig) -> None:
         mlflow.start_run()
 
         # Log hyperparameters
-        mlflow.log_params(
-            {
-                "batch_size": cfg.training.batch_size,
-                "epochs": cfg.training.epochs,
-                "learning_rate": cfg.training.initial_lr,
-                "optimizer": "Adam",
-                "train_loss": cfg.loss.base_loss_type,
-                "val_loss": cfg.loss.base_loss_type
-                if cfg.loss.base_loss_type == "simple_relative_l2"
-                else cfg.loss.base_loss_type,
-                "loss_masking": cfg.loss.use_mask,
-                "loss_derivative": cfg.loss.use_derivative,
-                "loss_derivative_weight": cfg.loss.derivative_weight
-                if cfg.loss.use_derivative
-                else 0.0,
-                "loss_derivative_dim": cfg.loss.derivative_dim
-                if cfg.loss.use_derivative
-                else None,
-                "loss_reduction": cfg.loss.get("reduction", "sum"),
-                "architecture": "U-FNO" if cfg.arch.ufno.num_unet_layers > 0 else "FNO",
-                "has_unet": cfg.arch.ufno.num_unet_layers > 0,
-                "data_format": "H × W × T",
-                "in_channels": cfg.arch.ufno.in_channels,
-                "out_channels": cfg.arch.ufno.out_channels,
-                "width": cfg.arch.ufno.width,
-                "modes1": cfg.arch.ufno.modes1,
-                "modes2": cfg.arch.ufno.modes2,
-                "modes3": cfg.arch.ufno.modes3,
-                "num_fno_layers": cfg.arch.ufno.num_fno_layers,
-                "num_unet_layers": cfg.arch.ufno.num_unet_layers,
-                "padding": cfg.arch.ufno.padding,
-                "activation_fn": cfg.arch.ufno.activation_fn,
-                "use_amp": cfg.training.use_amp,
-                "use_graphs": cfg.training.use_graphs,
-                "variable": cfg.data.variable,
-                "trainable_parameters": trainable_params,
-            }
-        )
+        mlflow_params = {
+            "dimensions": dimensions,
+            "model_type": model_type,
+            "model_arch_name": model_arch_name,
+            "batch_size": cfg.training.batch_size,
+            "epochs": cfg.training.epochs,
+            "learning_rate": cfg.training.initial_lr,
+            "optimizer": "Adam",
+            "train_loss": cfg.loss.base_loss_type,
+            "loss_masking": cfg.loss.use_mask,
+            "loss_derivative": cfg.loss.use_derivative,
+            "use_amp": cfg.training.use_amp,
+            "use_graphs": cfg.training.use_graphs,
+            "variable": cfg.data.variable,
+            "trainable_parameters": trainable_params,
+            "in_channels": in_channels,
+        }
+        
+        if model_type == "xfno":
+            xfno_cfg = cfg.arch.xfno
+            mlflow_params.update({
+                "width": xfno_cfg.width,
+                "modes1": xfno_cfg.modes1,
+                "modes2": xfno_cfg.modes2,
+                "modes3": xfno_cfg.modes3,
+                "num_fno_layers": xfno_cfg.num_fno_layers,
+                "padding": xfno_cfg.padding,
+                "activation_fn": xfno_cfg.activation_fn,
+            })
+            if dimensions == "4d":
+                mlflow_params["modes4"] = xfno_cfg.modes4
+            else:
+                mlflow_params["num_unet_layers"] = xfno_cfg.num_unet_layers
+                mlflow_params["num_conv_layers"] = xfno_cfg.num_conv_layers
+        elif model_type == "xdeeponet":
+            xdeeponet_cfg = cfg.arch.xdeeponet
+            mlflow_params.update({
+                "variant": xdeeponet_cfg.variant,
+                "width": xdeeponet_cfg.width,
+                "padding": xdeeponet_cfg.padding,
+                "branch1_type": xdeeponet_cfg.branch1.type,
+            })
+        
+        mlflow.log_params(mlflow_params)
 
     # Setup checkpointing (make absolute path since chdir=False)
     checkpoint_dir = Path(cfg.training.checkpoint_dir)
@@ -700,69 +730,59 @@ def main(cfg: DictConfig) -> None:
 
                         # Prepare model config to save with checkpoint
                         model_config = {
+                            "dimensions": dimensions,
                             "model_type": model_type,
                             "model_arch_name": model_arch_name,
                             "variable": cfg.data.variable,
+                            "in_channels": in_channels,
                         }
 
-                        if model_type == "ufno":
-                            model_config.update(
-                                {
-                                    "in_channels": cfg.arch.ufno.in_channels,
-                                    "out_channels": cfg.arch.ufno.out_channels,
-                                    "width": cfg.arch.ufno.width,
-                                    "modes1": cfg.arch.ufno.modes1,
-                                    "modes2": cfg.arch.ufno.modes2,
-                                    "modes3": cfg.arch.ufno.modes3,
-                                    "num_fno_layers": cfg.arch.ufno.num_fno_layers,
-                                    "num_unet_layers": num_unet,
-                                    "num_conv_layers": num_conv,
-                                    "padding": cfg.arch.ufno.padding,
-                                    "conv_kernel_size": cfg.arch.ufno.conv_kernel_size,
-                                    "unet_kernel_size": cfg.arch.ufno.unet_kernel_size,
-                                    "unet_dropout": cfg.arch.ufno.unet_dropout,
-                                    "unet_type": cfg.arch.ufno.unet_type,
-                                    "activation_fn": cfg.arch.ufno.activation_fn,
-                                    "lifting_type": cfg.arch.ufno.lifting_type,
-                                    "lifting_layers": cfg.arch.ufno.lifting_layers,
-                                    "lifting_width": cfg.arch.ufno.lifting_width,
-                                    "decoder_type": cfg.arch.ufno.decoder_type,
-                                    "decoder_layers": cfg.arch.ufno.decoder_layers,
-                                    "decoder_width": cfg.arch.ufno.decoder_width,
-                                    "decoder_activation_fn": cfg.arch.ufno.get("decoder_activation_fn", None),
-                                }
-                            )
-                        elif model_type == "unet":
-                            model_config.update(
-                                {
-                                    "in_channels": cfg.arch.unet.in_channels,
-                                    "out_channels": cfg.arch.unet.out_channels,
-                                    "unet_type": unet_type,
-                                }
-                            )
-                            if unet_type == "physicsnemo":
-                                model_config["unet_kwargs"] = dict(
-                                    cfg.arch.unet.physicsnemo
-                                )
-                            elif unet_type == "custom":
-                                model_config["unet_kwargs"] = dict(cfg.arch.unet.custom)
+                        if model_type == "xfno":
+                            xfno_cfg = cfg.arch.xfno
+                            model_config.update({
+                                "out_channels": xfno_cfg.out_channels,
+                                "width": xfno_cfg.width,
+                                "modes1": xfno_cfg.modes1,
+                                "modes2": xfno_cfg.modes2,
+                                "modes3": xfno_cfg.modes3,
+                                "num_fno_layers": xfno_cfg.num_fno_layers,
+                                "padding": xfno_cfg.padding,
+                                "activation_fn": xfno_cfg.activation_fn,
+                                "decoder_layers": xfno_cfg.decoder_layers,
+                                "decoder_width": xfno_cfg.decoder_width,
+                            })
+                            if dimensions == "4d":
+                                model_config.update({
+                                    "modes4": xfno_cfg.modes4,
+                                    "coord_features": xfno_cfg.coord_features,
+                                    "lifting_layers": xfno_cfg.lifting_layers,
+                                })
+                            else:
+                                model_config.update({
+                                    "num_unet_layers": xfno_cfg.num_unet_layers,
+                                    "num_conv_layers": xfno_cfg.num_conv_layers,
+                                    "unet_type": xfno_cfg.unet_type,
+                                    "lifting_type": xfno_cfg.lifting_type,
+                                    "lifting_layers": xfno_cfg.lifting_layers,
+                                    "lifting_width": xfno_cfg.lifting_width,
+                                    "decoder_type": xfno_cfg.decoder_type,
+                                })
 
-                        elif model_type == "deeponet":
-                            model_config.update(
-                                {
-                                    "variant": cfg.arch.deeponet.variant,
-                                    "width": cfg.arch.deeponet.width,
-                                    "padding": cfg.arch.deeponet.padding,
-                                    "branch1_config": dict(cfg.arch.deeponet.branch1),
-                                    "trunk_config": dict(cfg.arch.deeponet.trunk),
-                                    "decoder_type": cfg.arch.deeponet.get("decoder_type", "mlp"),
-                                    "decoder_width": cfg.arch.deeponet.decoder_width,
-                                    "decoder_layers": cfg.arch.deeponet.decoder_layers,
-                                    "decoder_activation_fn": cfg.arch.deeponet.get("decoder_activation_fn", "relu"),
-                                }
-                            )
-                            if cfg.arch.deeponet.variant in ['mionet', 'fourier_mionet']:
-                                model_config["branch2_config"] = dict(cfg.arch.deeponet.branch2)
+                        elif model_type == "xdeeponet":
+                            xdeeponet_cfg = cfg.arch.xdeeponet
+                            model_config.update({
+                                "variant": xdeeponet_cfg.variant,
+                                "width": xdeeponet_cfg.width,
+                                "padding": xdeeponet_cfg.padding,
+                                "branch1_config": dict(xdeeponet_cfg.branch1),
+                                "trunk_config": dict(xdeeponet_cfg.trunk),
+                                "decoder_type": xdeeponet_cfg.get("decoder_type", "mlp"),
+                                "decoder_width": xdeeponet_cfg.decoder_width,
+                                "decoder_layers": xdeeponet_cfg.decoder_layers,
+                                "decoder_activation_fn": xdeeponet_cfg.get("decoder_activation_fn", "relu"),
+                            })
+                            if xdeeponet_cfg.variant in ['mionet', 'fourier_mionet']:
+                                model_config["branch2_config"] = dict(xdeeponet_cfg.branch2)
 
                         torch.save(
                             {

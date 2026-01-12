@@ -101,11 +101,12 @@ class MLPBranch(nn.Module):
     
     Input: (B, in_features) - batch of scalar inputs
     Output: (B, out_features) - encoded representations
+    
+    Note: in_features is auto-discovered using LazyLinear on first forward pass.
     """
     
     def __init__(
         self,
-        in_features: int,
         out_features: int,
         hidden_width: int = 64,
         num_layers: int = 3,
@@ -119,7 +120,8 @@ class MLPBranch(nn.Module):
             self.activation_fn = get_activation(activation_fn)
         
         self.layers = nn.ModuleList()
-        self.layers.append(self._make_linear(in_features, hidden_width))
+        # First layer uses LazyLinear to auto-discover input size
+        self.layers.append(nn.LazyLinear(hidden_width))
         for _ in range(num_layers - 2):
             self.layers.append(self._make_linear(hidden_width, hidden_width))
         
@@ -303,7 +305,6 @@ class DeepONet(Module):
         
         if branch_type == 'mlp':
             return MLPBranch(
-                in_features=config.get('in_features', 12),
                 out_features=width,
                 hidden_width=config.get('hidden_width', 64),
                 num_layers=config.get('num_layers', 3),
@@ -639,7 +640,6 @@ class DeepONet3D(Module):
         
         if branch_type == 'mlp':
             return MLPBranch(
-                in_features=config.get('in_features', 12),
                 out_features=width,
                 hidden_width=config.get('hidden_width', 64),
                 num_layers=config.get('num_layers', 3),

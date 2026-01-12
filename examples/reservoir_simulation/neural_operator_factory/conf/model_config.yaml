@@ -5,170 +5,114 @@
 # =============================================================================
 # Model Architecture Configuration
 # =============================================================================
-#
-# Supported model types:
-#   - ufno: Fourier Neural Operator with U-Net (legacy)
-#   - unet: Pure U-Net (legacy)
-#   - deeponet: 2D DeepONet variants
-#   - deeponet3d: 3D DeepONet variants (for volumetric data)
-#
-# DeepONet Variants (both 2D and 3D):
-#   - deeponet: Basic DeepONet
-#   - u_deeponet: DeepONet with U-Net branch layers
-#   - fourier_deeponet: DeepONet with Fourier layers
-#   - conv_deeponet: DeepONet with convolutional layers
-#   - hybrid_deeponet: Combination of Fourier + U-Net + Conv
-#   - mionet: Multiple-input operator network (2 branches)
-#   - fourier_mionet: MIONet with Fourier layers
-#
-# Branch Layer Behavior:
-#   - If num_fourier_layers > 0: UNet/Conv layers get Fourier residual connection
-#   - If num_fourier_layers = 0: UNet/Conv layers are standalone
-#
-# =============================================================================
 
 arch:
   # ---------------------------------------------------------------------------
-  # Model Type Selection
+  # Step 1: Problem Dimensions
   # ---------------------------------------------------------------------------
-  model_type: deeponet3d  # Options: ufno, unet, deeponet, deeponet3d
+  # '3d' = 2D spatial + time, input shape (B, H, W, T, C)
+  # '4d' = 3D spatial + time, input shape (B, X, Y, Z, T, C)
+  dimensions: 4d
   
   # ---------------------------------------------------------------------------
-  # Legacy: U-FNO Configuration
+  # Step 2: Model Architecture
   # ---------------------------------------------------------------------------
-  ufno:
+  # 'xfno'      = Fourier Neural Operator variants
+  # 'xdeeponet' = DeepONet variants
+  model: xdeeponet
+
+  # ===========================================================================
+  # xFNO Configuration
+  # ===========================================================================
+  # Active when: model = xfno
+  # 
+  # Resulting model class:
+  #   - 3d: UFNO/UFNONet (SpectralConv3d + optional UNet/Conv)
+  #   - 4d: FNO4D/FNO4DNet (SpectralConv4d, pure FNO only)
+  
+  xfno:
     out_channels: 1
     width: 36
-    modes1: 10
-    modes2: 10
-    modes3: 10
-    num_fno_layers: 3
-    num_unet_layers: 3
-    num_conv_layers: 0
     padding: 8
-    conv_kernel_size: 3
-    unet_kernel_size: 3
-    unet_dropout: 0.0
-    unet_type: physicsnemo
-    activation_fn: relu
-    lifting_type: mlp
-    lifting_layers: 1
+    activation_fn: gelu
+    
+    # Fourier modes per dimension
+    modes1: 10                # H or X dimension
+    modes2: 10                # W or Y dimension
+    modes3: 10                # T or Z dimension
+    modes4: 6                 # T dimension (4d only, ignored for 3d)
+    
+    # Layer counts
+    num_fno_layers: 4
+    
+    # Lifting/Decoder
+    lifting_type: mlp         # 'mlp' or 'conv' (3d only)
+    lifting_layers: 2
     lifting_width: 2
-    decoder_type: mlp
+    decoder_type: mlp         # 'mlp' or 'conv' (3d only)
     decoder_layers: 1
     decoder_width: 128
     decoder_activation_fn: relu
-  
-  # ---------------------------------------------------------------------------
-  # Legacy: U-Net Configuration
-  # ---------------------------------------------------------------------------
-  unet:
-    out_channels: 1
-    unet_type: physicsnemo
     
-    physicsnemo:
-      kernel_size: 3
-      stride: 1
-      model_depth: 3
-      feature_map_channels: [36, 36, 36]
-      num_conv_blocks: 1
-      conv_activation: relu
-      conv_transpose_activation: relu
-      padding: 1
-      padding_mode: zeros
-      pooling_type: MaxPool3d
-      pool_size: 2
-      normalization: batchnorm
-      use_attn_gate: false
-      gradient_checkpointing: false
+    # --- 3d only options (ignored for 4d) ---
+    num_unet_layers: 0        # >0 enables U-FNO
+    num_conv_layers: 0        # >0 enables Conv-FNO
+    unet_type: physicsnemo    # 'custom' or 'physicsnemo'
+    unet_kernel_size: 3
+    unet_dropout: 0.0
+    conv_kernel_size: 3
     
-    custom:
-      kernel_size: 3
-      dropout_rate: 0.0
+    # --- 4d only options ---
+    coord_features: true      # Add (x, y, z, t) coordinate features
 
   # ===========================================================================
-  # 2D DeepONet Configuration
+  # xDeepONet Configuration
   # ===========================================================================
-  # Input shape: (B, H, W, T, C)
-  # Output shape: (B, H, W, T)
+  # Active when: model = xdeeponet
+  #
+  # Resulting model class:
+  #   - 3d: DeepONet/DeepONetWrapper (2D spatial branch)
+  #   - 4d: DeepONet3D/DeepONet3DWrapper (3D spatial branch)
+  #
+  # Variants:
+  #   - deeponet: Basic DeepONet (MLP branch only)
+  #   - u_deeponet: UNet-enhanced spatial branch
+  #   - fourier_deeponet: Fourier layers in spatial branch
+  #   - conv_deeponet: Conv layers in spatial branch
+  #   - hybrid_deeponet: Fourier + UNet + Conv combination
+  #   - mionet: Two-branch architecture
+  #   - fourier_mionet: Two-branch with Fourier layers
   
-  deeponet:
+  xdeeponet:
     variant: u_deeponet
-    width: 128
+    width: 64
     padding: 8
     
     # Branch 1: Primary spatial encoder
     branch1:
       type: spatial           # 'spatial' or 'mlp'
-      # in_channels: auto     # Inferred from input
       num_fourier_layers: 0   # 0 = pure UNet/Conv mode
-      num_unet_layers: 3
+      num_unet_layers: 2
       num_conv_layers: 0
-      modes1: 12              # Fourier modes (H dimension)
-      modes2: 12              # Fourier modes (W dimension)
+      modes1: 8               # H or X dimension
+      modes2: 8               # W or Y dimension
+      modes3: 6               # Z dimension (4d only, ignored for 3d)
       kernel_size: 3
       dropout: 0.0
       unet_impl: custom       # 'custom' or 'physicsnemo'
       activation_fn: sin
     
-    # Branch 2: Secondary encoder (for MIONet variants only)
+    # Branch 2: Secondary encoder (for mionet/fourier_mionet only)
+    # Note: in_features is auto-discovered from input data
     branch2:
       type: mlp
-      in_features: 5
       hidden_width: 64
       num_layers: 3
       activation_fn: relu
     
     # Trunk: Temporal/coordinate encoder
     trunk:
-      input_type: grid        # 'time' (1D) or 'grid' (x, y, t = 3D)
-      hidden_width: 128
-      num_layers: 6
-      activation_fn: sin
-    
-    # Decoder: Output projection
-    decoder_type: mlp         # 'mlp' or 'conv'
-    decoder_width: 128
-    decoder_layers: 2
-    decoder_activation_fn: relu
-
-  # ===========================================================================
-  # 3D DeepONet Configuration
-  # ===========================================================================
-  # Input shape: (B, X, Y, Z, T, C)
-  # Output shape: (B, X, Y, Z, T)
-  
-  deeponet3d:
-    variant: u_deeponet
-    width: 64                 # Reduced for memory efficiency
-    padding: 8
-    
-    # Branch 1: Primary 3D spatial encoder
-    branch1:
-      type: spatial           # 'spatial' or 'mlp'
-      # in_channels: auto     # Inferred from input
-      num_fourier_layers: 0   # 0 = pure UNet/Conv mode
-      num_unet_layers: 2      # Fewer layers for 3D (memory)
-      num_conv_layers: 0
-      modes1: 8               # Fourier modes (X dimension)
-      modes2: 8               # Fourier modes (Y dimension)
-      modes3: 6               # Fourier modes (Z dimension)
-      kernel_size: 3
-      dropout: 0.0
-      unet_impl: custom       # 'custom' or 'physicsnemo'
-      activation_fn: sin
-    
-    # Branch 2: Secondary encoder (for MIONet variants only)
-    branch2:
-      type: mlp
-      in_features: 5
-      hidden_width: 64
-      num_layers: 3
-      activation_fn: relu
-    
-    # Trunk: Temporal/coordinate encoder
-    trunk:
-      input_type: grid        # 'time' (1D) or 'grid' (x, y, z, t = 4D)
+      input_type: grid        # 'time' (t only) or 'grid' (x,y,t or x,y,z,t)
       hidden_width: 128
       num_layers: 6
       activation_fn: sin
@@ -186,64 +130,7 @@ arch:
 loss:
   base_loss_type: relative_l2   # 'mse', 'l1', 'relative_l2', 'relative_l1'
   reduction: mean
-  use_mask: true                # Mask inactive cells
+  use_mask: true
   use_derivative: false
   derivative_weight: 0.5
   derivative_dim: dx
-
-# =============================================================================
-# Configuration Examples
-# =============================================================================
-#
-# Example 1: Pure U-Net branch (original U-DeepONet)
-#   branch1:
-#     type: spatial
-#     num_fourier_layers: 0
-#     num_unet_layers: 3
-#     num_conv_layers: 0
-#
-# Example 2: Pure Fourier branch (FNO-style)
-#   branch1:
-#     type: spatial
-#     num_fourier_layers: 4
-#     num_unet_layers: 0
-#     num_conv_layers: 0
-#
-# Example 3: Hybrid U-FNO branch
-#   branch1:
-#     type: spatial
-#     num_fourier_layers: 2    # 2 pure Fourier layers
-#     num_unet_layers: 2       # 2 Fourier+UNet layers
-#     num_conv_layers: 0
-#
-# Example 4: MIONet with two branches
-#   variant: mionet
-#   branch1:
-#     type: spatial
-#     num_unet_layers: 3
-#   branch2:
-#     type: mlp
-#     in_features: 10
-#     num_layers: 4
-#
-# Example 5: 3D Fourier DeepONet
-#   model_type: deeponet3d
-#   deeponet3d:
-#     variant: fourier_deeponet
-#     branch1:
-#       num_fourier_layers: 3
-#       num_unet_layers: 0
-#       modes1: 8
-#       modes2: 8
-#       modes3: 6
-#
-# Example 6: FNO4D for volumetric problems
-#   model_type: fno4d
-#   fno4d:
-#     width: 32
-#     modes1: 8
-#     modes2: 8
-#     modes3: 6
-#     modes4: 6
-#     num_fno_layers: 4
-#     coord_features: true
