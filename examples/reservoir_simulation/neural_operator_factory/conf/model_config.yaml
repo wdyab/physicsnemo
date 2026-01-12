@@ -236,3 +236,14 @@ loss:
 #       modes1: 8
 #       modes2: 8
 #       modes3: 6
+#
+# Example 6: FNO4D for volumetric problems
+#   model_type: fno4d
+#   fno4d:
+#     width: 32
+#     modes1: 8
+#     modes2: 8
+#     modes3: 6
+#     modes4: 6
+#     num_fno_layers: 4
+#     coord_features: true
