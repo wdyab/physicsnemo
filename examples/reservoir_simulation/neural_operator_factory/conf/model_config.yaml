@@ -2,32 +2,40 @@
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Model Architecture and Loss Configuration
-# 
-# ============================================================================
-# DeepONet Branch Configuration (like xfno.py)
-# ============================================================================
+# =============================================================================
+# Model Architecture Configuration
+# =============================================================================
 #
-# Branch types:
-# - mlp: Pure MLP layers (for scalar inputs)
-# - spatial: Unified spatial branch (configure with layer counts)
+# Supported model types:
+#   - ufno: Fourier Neural Operator with U-Net (legacy)
+#   - unet: Pure U-Net (legacy)
+#   - deeponet: 2D DeepONet variants
+#   - deeponet3d: 3D DeepONet variants (for volumetric data)
 #
-# Spatial branch layer behavior:
-# - If num_fourier_layers > 0: UNet/Conv layers get Fourier base (xfno.py style)
-# - If num_fourier_layers = 0: UNet/Conv layers are pure (no Fourier)
+# DeepONet Variants (both 2D and 3D):
+#   - deeponet: Basic DeepONet
+#   - u_deeponet: DeepONet with U-Net branch layers
+#   - fourier_deeponet: DeepONet with Fourier layers
+#   - conv_deeponet: DeepONet with convolutional layers
+#   - hybrid_deeponet: Combination of Fourier + U-Net + Conv
+#   - mionet: Multiple-input operator network (2 branches)
+#   - fourier_mionet: MIONet with Fourier layers
 #
-# Examples:
-# - Pure UNet: num_fourier_layers=0, num_unet_layers=3 (original U-DeepONet)
-# - Pure Fourier: num_fourier_layers=4, num_unet_layers=0, num_conv_layers=0
-# - Pure Conv: num_fourier_layers=0, num_unet_layers=0, num_conv_layers=3
-# - U-FNO style: num_fourier_layers=2, num_unet_layers=3 (2 Fourier + 3 Fourier+UNet)
-# - Conv-FNO: num_fourier_layers=2, num_conv_layers=3 (2 Fourier + 3 Fourier+Conv)
+# Branch Layer Behavior:
+#   - If num_fourier_layers > 0: UNet/Conv layers get Fourier residual connection
+#   - If num_fourier_layers = 0: UNet/Conv layers are standalone
+#
+# =============================================================================
 
 arch:
-  # Model type selection
-  # Options: "ufno" (Fourier + U-Net), "unet" (pure U-Net), "deeponet" (DeepONet variants)
-  model_type: deeponet
+  # ---------------------------------------------------------------------------
+  # Model Type Selection
+  # ---------------------------------------------------------------------------
+  model_type: deeponet3d  # Options: ufno, unet, deeponet, deeponet3d
   
+  # ---------------------------------------------------------------------------
+  # Legacy: U-FNO Configuration
+  # ---------------------------------------------------------------------------
   ufno:
     out_channels: 1
     width: 36
@@ -51,6 +59,9 @@ arch:
     decoder_width: 128
     decoder_activation_fn: relu
   
+  # ---------------------------------------------------------------------------
+  # Legacy: U-Net Configuration
+  # ---------------------------------------------------------------------------
   unet:
     out_channels: 1
     unet_type: physicsnemo
@@ -75,35 +86,32 @@ arch:
       kernel_size: 3
       dropout_rate: 0.0
 
-  # ============================================================================
-  # DeepONet Configuration
-  # ============================================================================
+  # ===========================================================================
+  # 2D DeepONet Configuration
+  # ===========================================================================
+  # Input shape: (B, H, W, T, C)
+  # Output shape: (B, H, W, T)
+  
   deeponet:
-    variant: u_deeponet     # Model variant
+    variant: u_deeponet
+    width: 128
+    padding: 8
     
-    width: 128              # Latent feature dimension
-    padding: 8              # Spatial padding for U-Net compatibility
-    
-    # -------------------------------------------------------------------------
-    # Branch 1: Spatial branch (original U-DeepONet with 3 pure UNet layers)
-    # -------------------------------------------------------------------------
+    # Branch 1: Primary spatial encoder
     branch1:
-      type: spatial
-      # in_channels: 12     # Auto-inferred from input tensor shape
-      num_fourier_layers: 0 # 0 = pure UNet/Conv (no Fourier base)
-      num_unet_layers: 3    # 3 consecutive U-Net blocks
+      type: spatial           # 'spatial' or 'mlp'
+      # in_channels: auto     # Inferred from input
+      num_fourier_layers: 0   # 0 = pure UNet/Conv mode
+      num_unet_layers: 3
       num_conv_layers: 0
+      modes1: 12              # Fourier modes (H dimension)
+      modes2: 12              # Fourier modes (W dimension)
       kernel_size: 3
       dropout: 0.0
-      unet_impl: custom     # 'custom' (unet.py) or 'physicsnemo'
+      unet_impl: custom       # 'custom' or 'physicsnemo'
       activation_fn: sin
-      # modes1: 12          # Only needed if num_fourier_layers > 0
-      # modes2: 12
     
-    # -------------------------------------------------------------------------
-    # Branch 2: Not used for single-branch variants (u_deeponet, etc.)
-    # -------------------------------------------------------------------------
-    # Required for mionet variants
+    # Branch 2: Secondary encoder (for MIONet variants only)
     branch2:
       type: mlp
       in_features: 5
@@ -111,28 +119,120 @@ arch:
       num_layers: 3
       activation_fn: relu
     
-    # -------------------------------------------------------------------------
-    # Trunk: MLP that processes temporal/spatial coordinates
-    # -------------------------------------------------------------------------
+    # Trunk: Temporal/coordinate encoder
     trunk:
-      input_type: grid      # 'time' (1 feature) or 'grid' (x, y, t = 3 features)
+      input_type: grid        # 'time' (1D) or 'grid' (x, y, t = 3D)
       hidden_width: 128
       num_layers: 6
       activation_fn: sin
     
-    # -------------------------------------------------------------------------
-    # Decoder: projects combined features to output
-    # -------------------------------------------------------------------------
-    decoder_type: mlp
+    # Decoder: Output projection
+    decoder_type: mlp         # 'mlp' or 'conv'
     decoder_width: 128
     decoder_layers: 2
     decoder_activation_fn: relu
 
-# Loss function configuration
+  # ===========================================================================
+  # 3D DeepONet Configuration
+  # ===========================================================================
+  # Input shape: (B, X, Y, Z, T, C)
+  # Output shape: (B, X, Y, Z, T)
+  
+  deeponet3d:
+    variant: u_deeponet
+    width: 64                 # Reduced for memory efficiency
+    padding: 8
+    
+    # Branch 1: Primary 3D spatial encoder
+    branch1:
+      type: spatial           # 'spatial' or 'mlp'
+      # in_channels: auto     # Inferred from input
+      num_fourier_layers: 0   # 0 = pure UNet/Conv mode
+      num_unet_layers: 2      # Fewer layers for 3D (memory)
+      num_conv_layers: 0
+      modes1: 8               # Fourier modes (X dimension)
+      modes2: 8               # Fourier modes (Y dimension)
+      modes3: 6               # Fourier modes (Z dimension)
+      kernel_size: 3
+      dropout: 0.0
+      unet_impl: custom       # 'custom' or 'physicsnemo'
+      activation_fn: sin
+    
+    # Branch 2: Secondary encoder (for MIONet variants only)
+    branch2:
+      type: mlp
+      in_features: 5
+      hidden_width: 64
+      num_layers: 3
+      activation_fn: relu
+    
+    # Trunk: Temporal/coordinate encoder
+    trunk:
+      input_type: grid        # 'time' (1D) or 'grid' (x, y, z, t = 4D)
+      hidden_width: 128
+      num_layers: 6
+      activation_fn: sin
+    
+    # Decoder: Output projection
+    decoder_type: mlp         # 'mlp' or 'conv'
+    decoder_width: 128
+    decoder_layers: 2
+    decoder_activation_fn: relu
+
+# =============================================================================
+# Loss Function Configuration
+# =============================================================================
+
 loss:
-  base_loss_type: relative_l2
+  base_loss_type: relative_l2   # 'mse', 'l1', 'relative_l2', 'relative_l1'
   reduction: mean
-  use_mask: true
+  use_mask: true                # Mask inactive cells
   use_derivative: false
   derivative_weight: 0.5
   derivative_dim: dx
+
+# =============================================================================
+# Configuration Examples
+# =============================================================================
+#
+# Example 1: Pure U-Net branch (original U-DeepONet)
+#   branch1:
+#     type: spatial
+#     num_fourier_layers: 0
+#     num_unet_layers: 3
+#     num_conv_layers: 0
+#
+# Example 2: Pure Fourier branch (FNO-style)
+#   branch1:
+#     type: spatial
+#     num_fourier_layers: 4
+#     num_unet_layers: 0
+#     num_conv_layers: 0
+#
+# Example 3: Hybrid U-FNO branch
+#   branch1:
+#     type: spatial
+#     num_fourier_layers: 2    # 2 pure Fourier layers
+#     num_unet_layers: 2       # 2 Fourier+UNet layers
+#     num_conv_layers: 0
+#
+# Example 4: MIONet with two branches
+#   variant: mionet
+#   branch1:
+#     type: spatial
+#     num_unet_layers: 3
+#   branch2:
+#     type: mlp
+#     in_features: 10
+#     num_layers: 4
+#
+# Example 5: 3D Fourier DeepONet
+#   model_type: deeponet3d
+#   deeponet3d:
+#     variant: fourier_deeponet
+#     branch1:
+#       num_fourier_layers: 3
+#       num_unet_layers: 0
+#       modes1: 8
+#       modes2: 8
+#       modes3: 6
