@@ -15,150 +15,239 @@
 # limitations under the License.
 
 """
-Data validation utilities for CO2 sequestration models.
+Data validation utilities for reservoir simulation models.
 
-This module provides dynamic validation functions to ensure data dimensions
-are correctly formatted before training or evaluation.
+Supports both 3D (2D spatial + time) and 4D (3D spatial + time) datasets:
+- 3D: Input (B, H, W, T, C), Output (B, H, W, T)
+- 4D: Input (B, X, Y, Z, T, C), Output (B, X, Y, Z, T)
 """
 
 import torch
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
+
+
+def detect_dimensions(inputs: torch.Tensor) -> str:
+    """
+    Detect data dimensions from input tensor.
+    
+    Parameters
+    ----------
+    inputs : torch.Tensor
+        Input tensor (batched)
+    
+    Returns
+    -------
+    str
+        '3d' for (B, H, W, T, C) or '4d' for (B, X, Y, Z, T, C)
+    """
+    ndim = inputs.dim()
+    if ndim == 5:
+        return "3d"
+    elif ndim == 6:
+        return "4d"
+    else:
+        raise ValueError(
+            f"Cannot detect dimensions from {ndim}D tensor. "
+            f"Expected 5D (3d) or 6D (4d), got shape {tuple(inputs.shape)}"
+        )
 
 
 def validate_batch_dimensions(
-    inputs: torch.Tensor, targets: torch.Tensor, variable: str = "unknown"
-) -> Tuple[int, Tuple[int, int, int], int]:
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    variable: str = "unknown"
+) -> Dict:
     """
     Validate dimensions of a batch of training/evaluation data.
-
-    Args:
-        inputs: Input tensor, expected shape (batch, H, W, T, channels)
-        targets: Target tensor, expected shape (batch, H, W, T)
-        variable: Name of the variable being predicted (e.g., 'pressure', 'saturation')
-
-    Returns:
-        Tuple of (batch_size, spatial_dims, num_channels)
-
-    Raises:
-        ValueError: If data dimensions are invalid or inconsistent
+    
+    Automatically detects 3D or 4D data format.
+    
+    Parameters
+    ----------
+    inputs : torch.Tensor
+        Input tensor
+        - 3D: (batch, H, W, T, channels)
+        - 4D: (batch, X, Y, Z, T, channels)
+    targets : torch.Tensor
+        Target tensor
+        - 3D: (batch, H, W, T)
+        - 4D: (batch, X, Y, Z, T)
+    variable : str
+        Name of the variable being predicted
+    
+    Returns
+    -------
+    Dict
+        Dictionary with keys:
+        - dimensions: '3d' or '4d'
+        - batch_size: int
+        - spatial_shape: tuple
+        - time_steps: int
+        - num_channels: int
+    
+    Raises
+    ------
+    ValueError
+        If data dimensions are invalid or inconsistent
     """
-    # Check input dimensions: must be 5D (batch, H, W, T, channels)
-    if len(inputs.shape) != 5:
+    input_ndim = inputs.dim()
+    output_ndim = targets.dim()
+    
+    # Determine expected format based on input dimensions
+    if input_ndim == 5:
+        # 3D format: (B, H, W, T, C)
+        dimensions = "3d"
+        expected_output_ndim = 4
+        dim_names = "H, W, T"
+        spatial_slice = slice(1, 3)
+        time_idx = 3
+        channel_idx = 4
+        
+    elif input_ndim == 6:
+        # 4D format: (B, X, Y, Z, T, C)
+        dimensions = "4d"
+        expected_output_ndim = 5
+        dim_names = "X, Y, Z, T"
+        spatial_slice = slice(1, 4)
+        time_idx = 4
+        channel_idx = 5
+        
+    else:
         raise ValueError(
-            f"❌ Invalid input shape! Expected 5D tensor (batch, H, W, T, channels), "
-            f"got {len(inputs.shape)}D tensor with shape {inputs.shape}. "
-            f"Input data must be arranged as (batch, height, width, time, channels)."
+            f"❌ Invalid input shape! Expected 5D (B, H, W, T, C) for 3D data "
+            f"or 6D (B, X, Y, Z, T, C) for 4D data, "
+            f"got {input_ndim}D tensor with shape {tuple(inputs.shape)}."
         )
-
+    
+    # Validate output dimensions
+    if output_ndim != expected_output_ndim:
+        raise ValueError(
+            f"❌ Invalid target shape for {dimensions.upper()} data! "
+            f"Expected {expected_output_ndim}D tensor (B, {dim_names}), "
+            f"got {output_ndim}D tensor with shape {tuple(targets.shape)}."
+        )
+    
     # Extract dimensions
     batch_size = inputs.shape[0]
-    spatial_dims = tuple(inputs.shape[1:4])  # H, W, T
-    num_channels = inputs.shape[4]
-
-    # Check output dimensions: must be 4D (batch, H, W, T)
-    if len(targets.shape) != 4:
-        raise ValueError(
-            f"❌ Invalid target shape! Expected 4D tensor (batch, H, W, T), "
-            f"got {len(targets.shape)}D tensor with shape {targets.shape}. "
-            f"Target data must be arranged as (batch, height, width, time)."
-        )
-
-    # Check that spatial dimensions match between input and output
-    target_spatial_dims = tuple(targets.shape[1:4])
-    if target_spatial_dims != spatial_dims:
-        raise ValueError(
-            f"❌ Spatial dimension mismatch! "
-            f"Input spatial dims: {spatial_dims} (H, W, T), "
-            f"Target spatial dims: {target_spatial_dims} (H, W, T). "
-            f"Input and target must have the same spatial dimensions."
-        )
-
-    # Check that batch dimensions match
+    spatial_shape = tuple(inputs.shape[spatial_slice])
+    time_steps = inputs.shape[time_idx]
+    num_channels = inputs.shape[channel_idx]
+    
+    # Validate batch size match
     if targets.shape[0] != batch_size:
         raise ValueError(
             f"❌ Batch size mismatch! "
-            f"Input batch size: {batch_size}, "
-            f"Target batch size: {targets.shape[0]}. "
-            f"Batch dimensions must match."
+            f"Input: {batch_size}, Target: {targets.shape[0]}"
         )
-
-    # Sanity checks on dimension values
-    if spatial_dims[0] < 1 or spatial_dims[1] < 1 or spatial_dims[2] < 1:
+    
+    # Validate spatial+temporal dimensions match
+    input_spatiotemporal = tuple(inputs.shape[1:-1])  # All dims except batch and channels
+    target_spatiotemporal = tuple(targets.shape[1:])  # All dims except batch
+    
+    if input_spatiotemporal != target_spatiotemporal:
         raise ValueError(
-            f"❌ Invalid spatial dimensions: {spatial_dims}. "
-            f"All spatial dimensions (H, W, T) must be positive integers."
+            f"❌ Spatial/temporal dimension mismatch! "
+            f"Input: {input_spatiotemporal}, Target: {target_spatiotemporal}"
         )
-
+    
+    # Sanity checks
+    if any(d < 1 for d in spatial_shape):
+        raise ValueError(f"❌ Invalid spatial dimensions: {spatial_shape}")
+    if time_steps < 1:
+        raise ValueError(f"❌ Invalid time steps: {time_steps}")
     if num_channels < 1:
-        raise ValueError(
-            f"❌ Invalid number of channels: {num_channels}. "
-            f"Must have at least 1 input channel."
-        )
-
-    return batch_size, spatial_dims, num_channels
+        raise ValueError(f"❌ Invalid number of channels: {num_channels}")
+    
+    return {
+        "dimensions": dimensions,
+        "batch_size": batch_size,
+        "spatial_shape": spatial_shape,
+        "time_steps": time_steps,
+        "num_channels": num_channels,
+    }
 
 
 def validate_sample_dimensions(
-    input_sample: torch.Tensor, target_sample: torch.Tensor, variable: str = "unknown"
-) -> Tuple[Tuple[int, int, int], int]:
+    input_sample: torch.Tensor,
+    target_sample: torch.Tensor,
+    variable: str = "unknown"
+) -> Dict:
     """
-    Validate dimensions of a single sample (for evaluation).
-
-    Args:
-        input_sample: Input tensor, expected shape (H, W, T, channels)
-        target_sample: Target tensor, expected shape (H, W, T)
-        variable: Name of the variable being predicted
-
-    Returns:
-        Tuple of (spatial_dims, num_channels)
-
-    Raises:
-        ValueError: If data dimensions are invalid or inconsistent
+    Validate dimensions of a single sample (unbatched).
+    
+    Parameters
+    ----------
+    input_sample : torch.Tensor
+        Input tensor (single sample)
+        - 3D: (H, W, T, channels)
+        - 4D: (X, Y, Z, T, channels)
+    target_sample : torch.Tensor
+        Target tensor (single sample)
+        - 3D: (H, W, T)
+        - 4D: (X, Y, Z, T)
+    variable : str
+        Name of the variable being predicted
+    
+    Returns
+    -------
+    Dict
+        Dictionary with keys: dimensions, spatial_shape, time_steps, num_channels
     """
-    # Check input dimensions: must be 4D (H, W, T, channels)
-    if len(input_sample.shape) != 4:
+    input_ndim = input_sample.dim()
+    output_ndim = target_sample.dim()
+    
+    if input_ndim == 4:
+        # 3D: (H, W, T, C)
+        dimensions = "3d"
+        expected_output_ndim = 3
+        dim_names = "H, W, T"
+        spatial_slice = slice(0, 2)
+        time_idx = 2
+        channel_idx = 3
+        
+    elif input_ndim == 5:
+        # 4D: (X, Y, Z, T, C)
+        dimensions = "4d"
+        expected_output_ndim = 4
+        dim_names = "X, Y, Z, T"
+        spatial_slice = slice(0, 3)
+        time_idx = 3
+        channel_idx = 4
+        
+    else:
         raise ValueError(
-            f"❌ Invalid input shape! Expected 4D tensor (H, W, T, channels), "
-            f"got {len(input_sample.shape)}D tensor with shape {input_sample.shape}. "
-            f"Input data must be arranged as (height, width, time, channels)."
+            f"❌ Invalid input shape! Expected 4D (H, W, T, C) for 3D data "
+            f"or 5D (X, Y, Z, T, C) for 4D data, "
+            f"got {input_ndim}D tensor with shape {tuple(input_sample.shape)}."
         )
-
-    # Extract dimensions
-    spatial_dims = tuple(input_sample.shape[0:3])  # H, W, T
-    num_channels = input_sample.shape[3]
-
-    # Check output dimensions: must be 3D (H, W, T)
-    if len(target_sample.shape) != 3:
+    
+    if output_ndim != expected_output_ndim:
         raise ValueError(
-            f"❌ Invalid target shape! Expected 3D tensor (H, W, T), "
-            f"got {len(target_sample.shape)}D tensor with shape {target_sample.shape}. "
-            f"Target data must be arranged as (height, width, time)."
+            f"❌ Invalid target shape for {dimensions.upper()} data! "
+            f"Expected {expected_output_ndim}D tensor ({dim_names}), "
+            f"got {output_ndim}D tensor with shape {tuple(target_sample.shape)}."
         )
-
-    # Check that spatial dimensions match between input and output
-    target_spatial_dims = tuple(target_sample.shape)
-    if target_spatial_dims != spatial_dims:
+    
+    spatial_shape = tuple(input_sample.shape[spatial_slice])
+    time_steps = input_sample.shape[time_idx]
+    num_channels = input_sample.shape[channel_idx]
+    
+    # Validate spatial+temporal match
+    input_spatiotemporal = tuple(input_sample.shape[:-1])
+    target_spatiotemporal = tuple(target_sample.shape)
+    
+    if input_spatiotemporal != target_spatiotemporal:
         raise ValueError(
-            f"❌ Spatial dimension mismatch! "
-            f"Input spatial dims: {spatial_dims} (H, W, T), "
-            f"Target spatial dims: {target_spatial_dims} (H, W, T). "
-            f"Input and target must have the same spatial dimensions."
+            f"❌ Spatial/temporal dimension mismatch! "
+            f"Input: {input_spatiotemporal}, Target: {target_spatiotemporal}"
         )
-
-    # Sanity checks on dimension values
-    if spatial_dims[0] < 1 or spatial_dims[1] < 1 or spatial_dims[2] < 1:
-        raise ValueError(
-            f"❌ Invalid spatial dimensions: {spatial_dims}. "
-            f"All spatial dimensions (H, W, T) must be positive integers."
-        )
-
-    if num_channels < 1:
-        raise ValueError(
-            f"❌ Invalid number of channels: {num_channels}. "
-            f"Must have at least 1 input channel."
-        )
-
-    return spatial_dims, num_channels
+    
+    return {
+        "dimensions": dimensions,
+        "spatial_shape": spatial_shape,
+        "time_steps": time_steps,
+        "num_channels": num_channels,
+    }
 
 
 def print_validation_summary(
@@ -166,40 +255,136 @@ def print_validation_summary(
     target_shape: Tuple,
     variable: str,
     is_batch: bool = True,
-    logger: Optional[any] = None,
+    logger: Optional[object] = None,
 ):
     """
     Print a formatted summary of validation results.
-
-    Args:
-        input_shape: Shape of input tensor
-        target_shape: Shape of target tensor
-        variable: Name of the variable being predicted
-        is_batch: Whether shapes include batch dimension
-        logger: Optional logger object (if None, uses print)
+    
+    Automatically detects 3D or 4D format from shapes.
+    
+    Parameters
+    ----------
+    input_shape : Tuple
+        Shape of input tensor
+    target_shape : Tuple
+        Shape of target tensor
+    variable : str
+        Name of the variable being predicted
+    is_batch : bool
+        Whether shapes include batch dimension
+    logger : object, optional
+        Logger object with .success() and .info() methods
     """
     log_func = logger.success if logger else print
     info_func = logger.info if logger else print
-
-    log_func("✅ Data validation passed!")
-
+    
+    # Detect dimensions
     if is_batch:
+        is_4d = len(input_shape) == 6
         batch_size = input_shape[0]
-        spatial_dims = input_shape[1:4]
-        num_channels = input_shape[4]
-
-        info_func(f"   Input shape: {input_shape} → (batch, H, W, T, channels)")
-        info_func(f"   Target shape: {target_shape} → (batch, H, W, T)")
+        spatial_start = 1
+    else:
+        is_4d = len(input_shape) == 5
+        batch_size = None
+        spatial_start = 0
+    
+    if is_4d:
+        dim_label = "4D"
+        dim_names = ("X", "Y", "Z", "T")
+        spatial_end = spatial_start + 3
+    else:
+        dim_label = "3D"
+        dim_names = ("H", "W", "T")
+        spatial_end = spatial_start + 2
+    
+    spatial_shape = input_shape[spatial_start:spatial_end]
+    time_steps = input_shape[spatial_end]
+    num_channels = input_shape[-1]
+    
+    log_func(f"✅ Data validation passed! ({dim_label})")
+    
+    if is_batch:
+        spatial_str = " × ".join(f"{dim_names[i]}={spatial_shape[i]}" for i in range(len(spatial_shape)))
+        info_func(f"   Input shape: {input_shape} → (batch, {', '.join(dim_names)}, channels)")
+        info_func(f"   Target shape: {target_shape} → (batch, {', '.join(dim_names)})")
         info_func(f"   Batch size: {batch_size}")
     else:
-        spatial_dims = input_shape[0:3]
-        num_channels = input_shape[3]
-
-        info_func(f"   Input shape: {input_shape} → (H, W, T, channels)")
-        info_func(f"   Target shape: {target_shape} → (H, W, T)")
-
-    info_func(
-        f"   Spatial dimensions: {spatial_dims[0]}×{spatial_dims[1]}×{spatial_dims[2]} (H×W×T)"
-    )
+        info_func(f"   Input shape: {input_shape} → ({', '.join(dim_names)}, channels)")
+        info_func(f"   Target shape: {target_shape} → ({', '.join(dim_names)})")
+    
+    spatial_str = " × ".join(str(s) for s in spatial_shape)
+    info_func(f"   Spatial dimensions: {spatial_str} ({' × '.join(dim_names[:-1])})")
+    info_func(f"   Time steps: {time_steps}")
     info_func(f"   Input channels: {num_channels}")
     info_func(f"   Variable: {variable}")
+
+
+def get_dimension_info(tensor: torch.Tensor, is_batch: bool = True) -> Dict:
+    """
+    Extract dimension information from a tensor.
+    
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        Input tensor
+    is_batch : bool
+        Whether tensor includes batch dimension
+    
+    Returns
+    -------
+    Dict with dimension information
+    """
+    ndim = tensor.dim()
+    
+    if is_batch:
+        if ndim == 5:
+            return {
+                "dimensions": "3d",
+                "batch_size": tensor.shape[0],
+                "spatial_shape": tuple(tensor.shape[1:3]),
+                "time_steps": tensor.shape[3],
+                "num_channels": tensor.shape[4],
+            }
+        elif ndim == 6:
+            return {
+                "dimensions": "4d",
+                "batch_size": tensor.shape[0],
+                "spatial_shape": tuple(tensor.shape[1:4]),
+                "time_steps": tensor.shape[4],
+                "num_channels": tensor.shape[5],
+            }
+        elif ndim == 4:
+            # Output tensor (3D)
+            return {
+                "dimensions": "3d",
+                "batch_size": tensor.shape[0],
+                "spatial_shape": tuple(tensor.shape[1:3]),
+                "time_steps": tensor.shape[3],
+                "num_channels": 1,
+            }
+        elif ndim == 5:
+            # Output tensor (4D)
+            return {
+                "dimensions": "4d",
+                "batch_size": tensor.shape[0],
+                "spatial_shape": tuple(tensor.shape[1:4]),
+                "time_steps": tensor.shape[4],
+                "num_channels": 1,
+            }
+    else:
+        if ndim == 4:
+            return {
+                "dimensions": "3d",
+                "spatial_shape": tuple(tensor.shape[0:2]),
+                "time_steps": tensor.shape[2],
+                "num_channels": tensor.shape[3],
+            }
+        elif ndim == 5:
+            return {
+                "dimensions": "4d",
+                "spatial_shape": tuple(tensor.shape[0:3]),
+                "time_steps": tensor.shape[3],
+                "num_channels": tensor.shape[4],
+            }
+    
+    raise ValueError(f"Cannot extract dimension info from {ndim}D tensor")

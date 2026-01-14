@@ -15,218 +15,260 @@
 # limitations under the License.
 
 """
-Dataset loaders for CO2 Sequestration data.
+Unified dataset loaders for reservoir simulation neural operators.
+
+Supports both 3D (2D spatial + time) and 4D (3D spatial + time) datasets:
+- 3D: Input (N, H, W, T, C), Output (N, H, W, T) - e.g., CO2 sequestration
+- 4D: Input (N, X, Y, Z, T, C), Output (N, X, Y, Z, T) - e.g., Norne field
 """
 
 from pathlib import Path
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, Dict, List
 import torch
 from torch.utils.data import Dataset
 
 
-class CO2SequestrationDataset(Dataset):
-    """Dataset for CO2 sequestration modeling.
+def _log_message(msg: str, rank_zero_only: bool = True):
+    """Print message, optionally only on rank 0 in distributed mode."""
+    try:
+        from physicsnemo.distributed import DistributedManager
+        dist = DistributedManager()
+        if not rank_zero_only or dist.rank == 0:
+            print(msg)
+    except:
+        print(msg)
 
-    This dataset loads pre-computed CO2 flow simulations for training
-    neural operators. The data consists of:
-    - Input (u): Initial conditions and reservoir properties
-    - Output (a): Temporal evolution of CO2 plume (pressure or saturation)
 
+class ReservoirDataset(Dataset):
+    """
+    Unified dataset for reservoir simulation modeling.
+    
+    Automatically detects and handles both 3D and 4D data:
+    - 3D: (N, H, W, T, C) input, (N, H, W, T) output
+    - 4D: (N, X, Y, Z, T, C) input, (N, X, Y, Z, T) output
+    
     Parameters
     ----------
     data_path : Union[str, Path]
-        Path to the data directory containing .pt files
+        Path to the data directory or directly to input file
     mode : str
         Dataset split: 'train', 'val', or 'test'
-    variable : str
-        Variable to predict: 'pressure' (dP) or 'saturation' (sg)
-    normalize : bool, optional
-        Whether to normalize the data, by default True
-    device : Union[str, torch.device], optional
-        Device to load data onto, by default "cuda"
-
-    Example
-    -------
-    >>> from pathlib import Path
-    >>> data_dir = Path("data_lustre")
-    >>> train_dataset = CO2SequestrationDataset(
-    ...     data_path=data_dir,
-    ...     mode='train',
-    ...     variable='pressure',
-    ...     normalize=True
-    ... )
-    >>> print(f"Dataset size: {len(train_dataset)}")
-    >>> input, output = train_dataset[0]
-    >>> print(f"Input shape: {input.shape}, Output shape: {output.shape}")
-
-    Note
-    ----
-    The dataset expects the following file structure:
-    - {variable}_train_a.pt, {variable}_train_u.pt  (Training)
-    - {variable}_val_a.pt, {variable}_val_u.pt      (Validation)
-    - {variable}_test_a.pt, {variable}_test_u.pt    (Testing)
-
-    Where variable is either 'dP' (pressure) or 'sg' (saturation).
+    input_file : str, optional
+        Input filename pattern. Supports {mode} placeholder.
+        Default: auto-detect from data_path
+    output_file : str, optional
+        Output filename pattern. Supports {mode} placeholder.
+        Default: auto-detect from data_path
+    normalize : bool
+        Whether to normalize data (default: True)
+    
+    File Naming Patterns
+    --------------------
+    The dataset supports flexible file naming:
+    
+    1. Explicit files:
+       >>> ReservoirDataset(data_path, mode='train',
+       ...     input_file='train_inputs.pt', output_file='train_outputs.pt')
+    
+    2. Pattern with {mode} placeholder:
+       >>> ReservoirDataset(data_path, mode='train',
+       ...     input_file='data_{mode}_input.pt', output_file='data_{mode}_output.pt')
+    
+    3. CO2 dataset convention (auto-detected):
+       Files: dP_train_a.pt, dP_train_u.pt (or sg_*)
+       >>> ReservoirDataset(data_path, mode='train', variable='pressure')
+    
+    4. Generic convention (auto-detected):
+       Files: train_input.pt, train_output.pt
+       >>> ReservoirDataset(data_path, mode='train')
+    
+    Examples
+    --------
+    >>> # 3D CO2 dataset
+    >>> ds = ReservoirDataset('data/co2', mode='train', variable='pressure')
+    >>> x, y = ds[0]  # x: (H, W, T, C), y: (H, W, T)
+    
+    >>> # 4D Norne dataset with explicit files
+    >>> ds = ReservoirDataset('data/norne', mode='train',
+    ...     input_file='norne_{mode}_input.pt', output_file='norne_{mode}_output.pt')
+    >>> x, y = ds[0]  # x: (X, Y, Z, T, C), y: (X, Y, Z, T)
     """
-
+    
     def __init__(
         self,
         data_path: Union[str, Path],
         mode: str = "train",
-        variable: str = "pressure",
+        input_file: Optional[str] = None,
+        output_file: Optional[str] = None,
+        variable: Optional[str] = None,
         normalize: bool = True,
-        device: Union[str, torch.device] = "cuda",
     ):
         super().__init__()
-
+        
         self.data_path = Path(data_path)
         self.mode = mode.lower()
         self.normalize = normalize
-
-        # Set up device
-        if isinstance(device, str):
-            device = torch.device(device)
-        if device.type == "cuda" and device.index is None:
-            device = torch.device("cuda:0")
-        self.device = device
-
-        # Map variable name to file prefix
-        var_map = {
-            "pressure": "dP",
-            "saturation": "sg",
-            "dP": "dP",
-            "sg": "sg",
-        }
-
-        if variable.lower() not in var_map:
-            raise ValueError(
-                f"Variable must be 'pressure' or 'saturation', got {variable}"
-            )
-
-        self.variable = var_map[variable.lower()]
-
-        # Validate mode
+        self.variable = variable
+        
         if self.mode not in ["train", "val", "test"]:
             raise ValueError(f"Mode must be 'train', 'val', or 'test', got {mode}")
-
-        # Load data files
+        
+        # Resolve file paths
+        self.input_file, self.output_file = self._resolve_file_paths(
+            input_file, output_file, variable
+        )
+        
+        # Load data
         self._load_data()
-
-        # Compute normalization statistics
+        
+        # Detect dimensions and set metadata
+        self._detect_dimensions()
+        
+        # Compute normalization
         if self.normalize:
             self._compute_normalization()
-
+    
+    def _resolve_file_paths(
+        self, input_file: Optional[str], output_file: Optional[str], variable: Optional[str]
+    ) -> Tuple[Path, Path]:
+        """Resolve input and output file paths with flexible naming support."""
+        
+        # Case 1: Explicit files provided
+        if input_file is not None and output_file is not None:
+            # Replace {mode} placeholder
+            input_name = input_file.format(mode=self.mode)
+            output_name = output_file.format(mode=self.mode)
+            return self.data_path / input_name, self.data_path / output_name
+        
+        # Case 2: Variable-based naming (CO2 convention)
+        if variable is not None:
+            var_map = {"pressure": "dP", "saturation": "sg", "dP": "dP", "sg": "sg"}
+            if variable.lower() not in var_map:
+                raise ValueError(f"Variable must be 'pressure' or 'saturation', got {variable}")
+            var_prefix = var_map[variable.lower()]
+            return (
+                self.data_path / f"{var_prefix}_{self.mode}_a.pt",
+                self.data_path / f"{var_prefix}_{self.mode}_u.pt"
+            )
+        
+        # Case 3: Auto-detect from directory
+        return self._auto_detect_files()
+    
+    def _auto_detect_files(self) -> Tuple[Path, Path]:
+        """Auto-detect input/output files from directory."""
+        
+        # Common naming patterns to try (in order of preference)
+        patterns = [
+            # Generic pattern
+            (f"{self.mode}_input.pt", f"{self.mode}_output.pt"),
+            (f"input_{self.mode}.pt", f"output_{self.mode}.pt"),
+            (f"{self.mode}_x.pt", f"{self.mode}_y.pt"),
+            (f"x_{self.mode}.pt", f"y_{self.mode}.pt"),
+            # CO2 patterns (try both variables)
+            (f"dP_{self.mode}_a.pt", f"dP_{self.mode}_u.pt"),
+            (f"sg_{self.mode}_a.pt", f"sg_{self.mode}_u.pt"),
+        ]
+        
+        for input_name, output_name in patterns:
+            input_path = self.data_path / input_name
+            output_path = self.data_path / output_name
+            if input_path.exists() and output_path.exists():
+                return input_path, output_path
+        
+        # List available .pt files for helpful error message
+        pt_files = list(self.data_path.glob("*.pt"))
+        raise FileNotFoundError(
+            f"Could not auto-detect data files in {self.data_path}\n"
+            f"Available .pt files: {[f.name for f in pt_files]}\n"
+            f"Please specify input_file and output_file explicitly."
+        )
+    
     def _load_data(self):
-        """Load the .pt files from disk."""
-        # Construct file paths
-        # NOTE: _a.pt files contain INPUT (12 physical quantities)
-        #       _u.pt files contain OUTPUT (1 channel: dP or sg to predict)
-        input_file = self.data_path / f"{self.variable}_{self.mode}_a.pt"
-        output_file = self.data_path / f"{self.variable}_{self.mode}_u.pt"
-
-        # Check if files exist
-        if not input_file.exists():
-            raise FileNotFoundError(
-                f"Input file not found: {input_file}\n"
-                f"Please ensure dataset is downloaded to {self.data_path}"
-            )
-        if not output_file.exists():
-            raise FileNotFoundError(
-                f"Output file not found: {output_file}\n"
-                f"Please ensure dataset is downloaded to {self.data_path}"
-            )
-
-        # Minimal loading message (only on rank 0 if distributed)
-        try:
-            from physicsnemo.distributed import DistributedManager
-
-            dist = DistributedManager()
-            if dist.rank == 0:
-                print(
-                    f"Loading {self.mode} data: {input_file.name} -> {output_file.name}"
-                )
-        except:
-            print(f"Loading {self.mode} data: {input_file.name} -> {output_file.name}")
-
-        # Load tensors
-        self.input_data = torch.load(input_file, map_location="cpu")
-        self.output_data = torch.load(output_file, map_location="cpu")
-
-        # Data format: (Height × Width × Time × Channels)
-        # INPUT (_a.pt):  (N, H, W, T, C=12) - 12 physical quantities as input channels
-        # OUTPUT (_u.pt): (N, H, W, T) - single output (pressure dP OR saturation sg)
-
-        # Validate input data shape - must be (N, H, W, T, C) where C can vary
-        if self.input_data.dim() != 5:
+        """Load data from disk."""
+        if not self.input_file.exists():
+            raise FileNotFoundError(f"Input file not found: {self.input_file}")
+        if not self.output_file.exists():
+            raise FileNotFoundError(f"Output file not found: {self.output_file}")
+        
+        _log_message(f"Loading {self.mode} data: {self.input_file.name} -> {self.output_file.name}")
+        
+        self.input_data = torch.load(self.input_file, map_location="cpu")
+        self.output_data = torch.load(self.output_file, map_location="cpu")
+        
+        _log_message(
+            f"  Loaded {len(self.input_data)} samples | "
+            f"Input: {tuple(self.input_data.shape)} | Output: {tuple(self.output_data.shape)}"
+        )
+    
+    def _detect_dimensions(self):
+        """Detect spatial dimensions (3D or 4D) from data shape."""
+        input_ndim = self.input_data.dim()
+        output_ndim = self.output_data.dim()
+        
+        # 3D data: Input (N, H, W, T, C), Output (N, H, W, T)
+        if input_ndim == 5 and output_ndim == 4:
+            self.dimensions = "3d"
+            self.spatial_dims = 2  # H, W
+            self.dim_names = ("H", "W", "T")
+            
+        # 4D data: Input (N, X, Y, Z, T, C), Output (N, X, Y, Z, T)
+        elif input_ndim == 6 and output_ndim == 5:
+            self.dimensions = "4d"
+            self.spatial_dims = 3  # X, Y, Z
+            self.dim_names = ("X", "Y", "Z", "T")
+            
+        else:
             raise ValueError(
-                f"Input data must be 5D (N, H, W, T, C), got {self.input_data.dim()}D "
-                f"with shape {self.input_data.shape}"
+                f"Unsupported data dimensions!\n"
+                f"  Input: {input_ndim}D {tuple(self.input_data.shape)}\n"
+                f"  Output: {output_ndim}D {tuple(self.output_data.shape)}\n"
+                f"Expected:\n"
+                f"  3D: Input (N, H, W, T, C), Output (N, H, W, T)\n"
+                f"  4D: Input (N, X, Y, Z, T, C), Output (N, X, Y, Z, T)"
             )
-
-        # Validate output data shape - must be (N, H, W, T) scalar field
-        if self.output_data.dim() != 4:
-            raise ValueError(
-                f"Output data must be 4D (N, H, W, T), got {self.output_data.dim()}D "
-                f"with shape {self.output_data.shape}"
-            )
-
-        # Only print on rank 0 if distributed
-        try:
-            from physicsnemo.distributed import DistributedManager
-
-            dist = DistributedManager()
-            if dist.rank == 0:
-                print(
-                    f"  Loaded {len(self.input_data)} samples | Input: {self.input_data.shape} | Output: {self.output_data.shape}"
-                )
-        except:
-            print(
-                f"  Loaded {len(self.input_data)} samples | Input: {self.input_data.shape} | Output: {self.output_data.shape}"
-            )
-
+        
+        # Store shape info
+        self.num_samples = self.input_data.shape[0]
+        self.spatial_shape = tuple(self.input_data.shape[1:-2])  # Spatial dims only
+        self.time_steps = self.input_data.shape[-2]
+        self.num_channels = self.input_data.shape[-1]
+        
+        _log_message(
+            f"  Detected: {self.dimensions.upper()} | "
+            f"Spatial: {self.spatial_shape} | T: {self.time_steps} | C: {self.num_channels}"
+        )
+    
     def _compute_normalization(self):
-        """Compute normalization statistics (mean and std) from training data."""
-        # For training data, compute statistics
-        # Data shape: Input: (N, H, W, T, 12), Output: (N, H, W, T)
+        """Compute normalization statistics (dimension-agnostic)."""
         if self.mode == "train":
-            # Compute mean and std across batch, spatial, and temporal dimensions
-            # Keep channel dimension separate for independent normalization (inputs only)
-            self.input_mean = self.input_data.mean(dim=(0, 1, 2, 3), keepdim=True)
-            self.input_std = self.input_data.std(dim=(0, 1, 2, 3), keepdim=True)
-            # Output is scalar field (N, H, W, T), compute single mean/std
+            # Compute mean/std across all dims except channels (last dim)
+            # Works for both 5D (N,H,W,T,C) and 6D (N,X,Y,Z,T,C)
+            reduce_dims = tuple(range(self.input_data.dim() - 1))  # All except last
+            
+            self.input_mean = self.input_data.mean(dim=reduce_dims, keepdim=True)
+            self.input_std = self.input_data.std(dim=reduce_dims, keepdim=True)
             self.output_mean = self.output_data.mean()
             self.output_std = self.output_data.std()
-
+            
             # Avoid division by zero
             self.input_std = torch.where(
                 self.input_std > 1e-6, self.input_std, torch.ones_like(self.input_std)
             )
             if self.output_std < 1e-6:
                 self.output_std = torch.tensor(1.0)
-
-            # Only print on rank 0 if distributed
-            try:
-                from physicsnemo.distributed import DistributedManager
-
-                dist = DistributedManager()
-                if dist.rank == 0:
-                    print(
-                        f"  Normalization: Output mean={self.output_mean.item():.4f}, std={self.output_std.item():.4f}"
-                    )
-            except:
-                print(
-                    f"  Normalization: Output mean={self.output_mean.item():.4f}, std={self.output_std.item():.4f}"
-                )
+            
+            _log_message(
+                f"  Normalization: Output mean={self.output_mean.item():.4f}, "
+                f"std={self.output_std.item():.4f}"
+            )
         else:
-            # For val/test, initialize with identity normalization
-            # (Should be set from training set in practice)
-            # Input: 5D to match data shape (1, 1, 1, 1, C)
-            # Output: scalar (no dimensions)
-            self.input_mean = torch.zeros((1, 1, 1, 1, self.input_data.shape[-1]))
-            self.input_std = torch.ones((1, 1, 1, 1, self.input_data.shape[-1]))
+            # Identity normalization for val/test (set from training)
+            shape = [1] * (self.input_data.dim() - 1) + [self.num_channels]
+            self.input_mean = torch.zeros(shape)
+            self.input_std = torch.ones(shape)
             self.output_mean = torch.tensor(0.0)
             self.output_std = torch.tensor(1.0)
-
+    
     def set_normalization(
         self,
         input_mean: torch.Tensor,
@@ -234,236 +276,254 @@ class CO2SequestrationDataset(Dataset):
         output_mean: torch.Tensor,
         output_std: torch.Tensor,
     ):
-        """Set normalization parameters from external source (e.g., training set).
-
-        Parameters
-        ----------
-        input_mean : torch.Tensor
-            Mean of input data
-        input_std : torch.Tensor
-            Standard deviation of input data
-        output_mean : torch.Tensor
-            Mean of output data
-        output_std : torch.Tensor
-            Standard deviation of output data
-        """
+        """Set normalization parameters from external source (e.g., training set)."""
         self.input_mean = input_mean
         self.input_std = input_std
         self.output_mean = output_mean
         self.output_std = output_std
-
+    
     def get_normalization_stats(self) -> Tuple[torch.Tensor, ...]:
-        """Return normalization statistics.
-
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
-            (input_mean, input_std, output_mean, output_std)
-        """
+        """Return normalization statistics."""
         return (self.input_mean, self.input_std, self.output_mean, self.output_std)
-
+    
     def __len__(self) -> int:
-        """Return the number of samples in the dataset."""
-        return len(self.input_data)
-
+        return self.num_samples
+    
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get a single sample from the dataset.
-
-        Parameters
-        ----------
-        idx : int
-            Sample index
-
+        """
+        Get a single sample.
+        
         Returns
         -------
         Tuple[torch.Tensor, torch.Tensor]
-            (input_tensor, output_tensor)
-            input: (H, W, T, C) where C=12 (12 physical quantities)
-            output: (H, W, T) - single scalar field (pressure or saturation)
+            3D: input (H, W, T, C), output (H, W, T)
+            4D: input (X, Y, Z, T, C), output (X, Y, Z, T)
         """
-        # Get data (keep on CPU for now)
-        input_sample = self.input_data[
-            idx
-        ]  # (H=96, W=200, T=24, C=12) - 12 input channels
-        output_sample = self.output_data[idx]  # (H=96, W=200, T=24) - scalar output
-
-        # Normalize if enabled
+        input_sample = self.input_data[idx]
+        output_sample = self.output_data[idx]
+        
         if self.normalize:
-            # Ensure normalization stats are on same device as data
             input_mean = self.input_mean.to(input_sample.device)
             input_std = self.input_std.to(input_sample.device)
             output_mean = self.output_mean.to(output_sample.device)
             output_std = self.output_std.to(output_sample.device)
-
+            
             input_sample = (input_sample - input_mean) / input_std
             output_sample = (output_sample - output_mean) / output_std
-
+        
         return input_sample, output_sample
 
 
-def collate_fn_3d(batch):
-    """Custom collate function for 3D FNO data.
+# =============================================================================
+# Legacy Alias for Backward Compatibility
+# =============================================================================
 
-    Properly stacks samples into batches without adding extra dimensions.
-    - inputs: (B, H, W, T, C) where C=12 input channels
-    - targets: (B, H, W, T) single scalar field (no channel dimension)
+class CO2SequestrationDataset(ReservoirDataset):
+    """
+    Legacy alias for CO2 sequestration dataset.
+    
+    Deprecated: Use ReservoirDataset with variable='pressure' or 'saturation'.
+    """
+    
+    def __init__(
+        self,
+        data_path: Union[str, Path],
+        mode: str = "train",
+        variable: str = "pressure",
+        normalize: bool = True,
+        device: Union[str, torch.device] = "cuda",  # Ignored, kept for compatibility
+    ):
+        super().__init__(
+            data_path=data_path,
+            mode=mode,
+            variable=variable,
+            normalize=normalize,
+        )
+
+
+# =============================================================================
+# Collate Functions
+# =============================================================================
+
+def collate_fn(batch):
+    """
+    Universal collate function for reservoir data.
+    
+    Works for both 3D and 4D data - simply stacks samples along batch dimension.
     """
     inputs = torch.stack([item[0] for item in batch], dim=0)
     targets = torch.stack([item[1] for item in batch], dim=0)
     return inputs, targets
 
 
+# Legacy alias
+collate_fn_3d = collate_fn
+
+
+# =============================================================================
+# Dataloader Factory
+# =============================================================================
+
 def create_dataloaders(
     data_path: Union[str, Path],
-    variable: str = "pressure",
     batch_size: int = 4,
     normalize: bool = True,
     num_workers: int = 4,
     device: Union[str, torch.device] = "cuda",
+    # Flexible file specification
+    input_file: Optional[str] = None,
+    output_file: Optional[str] = None,
+    variable: Optional[str] = None,
 ) -> Tuple[torch.utils.data.DataLoader, ...]:
-    """Create train, validation, and test dataloaders.
-
+    """
+    Create train, validation, and test dataloaders.
+    
+    Supports both 3D and 4D datasets with flexible file naming.
+    
     Parameters
     ----------
     data_path : Union[str, Path]
         Path to the data directory
+    batch_size : int
+        Batch size (default: 4)
+    normalize : bool
+        Whether to normalize data (default: True)
+    num_workers : int
+        Number of dataloader workers (default: 4)
+    device : Union[str, torch.device]
+        Device for pin_memory optimization (default: "cuda")
+    input_file : str, optional
+        Input filename pattern with {mode} placeholder
+    output_file : str, optional
+        Output filename pattern with {mode} placeholder
     variable : str, optional
-        Variable to predict ('pressure' or 'saturation'), by default 'pressure'
-    batch_size : int, optional
-        Batch size, by default 4
-    normalize : bool, optional
-        Whether to normalize data, by default True
-    num_workers : int, optional
-        Number of dataloader workers, by default 4
-    device : Union[str, torch.device], optional
-        Device to load data onto, by default "cuda"
-
+        Variable name for CO2 convention ('pressure' or 'saturation')
+    
     Returns
     -------
     Tuple[DataLoader, DataLoader, DataLoader]
         (train_loader, val_loader, test_loader)
-
-    Example
-    -------
-    >>> train_loader, val_loader, test_loader = create_dataloaders(
-    ...     data_path="data_lustre",
-    ...     variable="pressure",
-    ...     batch_size=8,
+    
+    Examples
+    --------
+    >>> # CO2 dataset (3D)
+    >>> train, val, test = create_dataloaders('data/co2', variable='pressure')
+    
+    >>> # Norne dataset (4D) with explicit files
+    >>> train, val, test = create_dataloaders(
+    ...     'data/norne',
+    ...     input_file='norne_{mode}_input.pt',
+    ...     output_file='norne_{mode}_output.pt'
     ... )
     """
     from torch.utils.data import DataLoader
-
-    # Check if running in distributed mode
+    
+    # Check distributed mode
     try:
         from physicsnemo.distributed import DistributedManager
-
         dist = DistributedManager()
         is_distributed = dist.world_size > 1
     except:
         is_distributed = False
-
+    
+    # Common kwargs for dataset creation
+    dataset_kwargs = {
+        "data_path": data_path,
+        "input_file": input_file,
+        "output_file": output_file,
+        "variable": variable,
+        "normalize": normalize,
+    }
+    
     # Create datasets
-    train_dataset = CO2SequestrationDataset(
-        data_path=data_path,
-        mode="train",
-        variable=variable,
-        normalize=normalize,
-        device="cpu",  # Keep on CPU, let DataLoader handle transfer
-    )
-    val_dataset = CO2SequestrationDataset(
-        data_path=data_path,
-        mode="val",
-        variable=variable,
-        normalize=normalize,
-        device="cpu",
-    )
-    test_dataset = CO2SequestrationDataset(
-        data_path=data_path,
-        mode="test",
-        variable=variable,
-        normalize=normalize,
-        device="cpu",
-    )
-
-    # Share normalization statistics from training set
+    train_dataset = ReservoirDataset(mode="train", **dataset_kwargs)
+    val_dataset = ReservoirDataset(mode="val", **dataset_kwargs)
+    test_dataset = ReservoirDataset(mode="test", **dataset_kwargs)
+    
+    # Share normalization from training set
     if normalize:
         norm_stats = train_dataset.get_normalization_stats()
-
-        # Synchronize normalization statistics across all ranks in distributed training
+        
         if is_distributed:
             import torch.distributed as dist_torch
-
             for stat in norm_stats:
-                # Broadcast normalization stats from rank 0 to all other ranks
                 dist_torch.broadcast(stat, src=0)
-
-        # Apply synchronized normalization to validation and test sets
+        
         val_dataset.set_normalization(*norm_stats)
         test_dataset.set_normalization(*norm_stats)
-
-    # Determine if we should use pin_memory for faster CPU->GPU transfer
-    use_pin_memory = isinstance(device, torch.device) and device.type == "cuda"
-    if isinstance(device, str):
-        use_pin_memory = device == "cuda"
-
-    # Create distributed sampler if running in multi-GPU mode
-    train_sampler = None
+    
+    # Determine pin_memory setting
+    use_pin_memory = (
+        (isinstance(device, torch.device) and device.type == "cuda") or
+        (isinstance(device, str) and device == "cuda")
+    )
+    
+    # Create samplers for distributed training
+    train_sampler = val_sampler = test_sampler = None
     if is_distributed:
         from torch.utils.data.distributed import DistributedSampler
-
-        train_sampler = DistributedSampler(
-            train_dataset,
-            shuffle=True,
-            drop_last=False,
-        )
-
-    # Create distributed samplers for val/test if in distributed mode
-    val_sampler = None
-    test_sampler = None
-    if is_distributed:
-        from torch.utils.data.distributed import DistributedSampler
-
-        val_sampler = DistributedSampler(
-            val_dataset,
-            shuffle=False,
-            drop_last=False,
-        )
-        test_sampler = DistributedSampler(
-            test_dataset,
-            shuffle=False,
-            drop_last=False,
-        )
-
-    # Create dataloaders with optimized settings and custom collate function
+        train_sampler = DistributedSampler(train_dataset, shuffle=True, drop_last=False)
+        val_sampler = DistributedSampler(val_dataset, shuffle=False, drop_last=False)
+        test_sampler = DistributedSampler(test_dataset, shuffle=False, drop_last=False)
+    
+    # Create dataloaders
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "pin_memory": use_pin_memory,
+        "persistent_workers": num_workers > 0,
+        "collate_fn": collate_fn,
+    }
+    
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
-        shuffle=(train_sampler is None),  # Only shuffle if not using sampler
+        shuffle=(train_sampler is None),
         sampler=train_sampler,
-        num_workers=num_workers,
-        pin_memory=use_pin_memory,
-        persistent_workers=num_workers > 0,  # Keep workers alive between epochs
-        collate_fn=collate_fn_3d,  # Custom collate for 3D data
+        **loader_kwargs
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
         shuffle=False,
         sampler=val_sampler,
-        num_workers=num_workers,
-        pin_memory=use_pin_memory,
-        persistent_workers=num_workers > 0,
-        collate_fn=collate_fn_3d,
+        **loader_kwargs
     )
     test_loader = DataLoader(
         test_dataset,
-        batch_size=batch_size,
         shuffle=False,
         sampler=test_sampler,
-        num_workers=num_workers,
-        pin_memory=use_pin_memory,
-        persistent_workers=num_workers > 0,
-        collate_fn=collate_fn_3d,
+        **loader_kwargs
     )
-
+    
+    # Log dimensions info
+    _log_message(
+        f"Created dataloaders: {train_dataset.dimensions.upper()} data | "
+        f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}"
+    )
+    
     return train_loader, val_loader, test_loader
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+def get_dataset_info(data_path: Union[str, Path], **kwargs) -> Dict:
+    """
+    Get information about a dataset without loading all data.
+    
+    Returns
+    -------
+    Dict with keys: dimensions, spatial_shape, time_steps, num_channels, num_samples
+    """
+    ds = ReservoirDataset(data_path, mode="train", normalize=False, **kwargs)
+    return {
+        "dimensions": ds.dimensions,
+        "spatial_shape": ds.spatial_shape,
+        "time_steps": ds.time_steps,
+        "num_channels": ds.num_channels,
+        "num_samples": {
+            "train": len(ds),
+            "val": len(ReservoirDataset(data_path, mode="val", normalize=False, **kwargs)),
+            "test": len(ReservoirDataset(data_path, mode="test", normalize=False, **kwargs)),
+        }
+    }
