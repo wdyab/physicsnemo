@@ -92,6 +92,11 @@ class ReservoirDataset(Dataset):
     >>> ds = ReservoirDataset('data/norne', mode='train',
     ...     input_file='norne_{mode}_input.pt', output_file='norne_{mode}_output.pt')
     >>> x, y = ds[0]  # x: (X, Y, Z, T, C), y: (X, Y, Z, T)
+    
+    >>> # With dimension validation (from config)
+    >>> ds = ReservoirDataset('data/norne', mode='train',
+    ...     input_file='norne_{mode}_input.pt', output_file='norne_{mode}_output.pt',
+    ...     expected_dimensions='4d')  # Raises error if data is 3d
     """
     
     def __init__(
@@ -102,6 +107,7 @@ class ReservoirDataset(Dataset):
         output_file: Optional[str] = None,
         variable: Optional[str] = None,
         normalize: bool = True,
+        expected_dimensions: Optional[str] = None,
     ):
         super().__init__()
         
@@ -109,6 +115,7 @@ class ReservoirDataset(Dataset):
         self.mode = mode.lower()
         self.normalize = normalize
         self.variable = variable
+        self.expected_dimensions = expected_dimensions.lower() if expected_dimensions else None
         
         if self.mode not in ["train", "val", "test"]:
             raise ValueError(f"Mode must be 'train', 'val', or 'test', got {mode}")
@@ -201,7 +208,7 @@ class ReservoirDataset(Dataset):
         )
     
     def _detect_dimensions(self):
-        """Detect spatial dimensions (3D or 4D) from data shape."""
+        """Detect spatial dimensions (3D or 4D) from data shape and validate against expected."""
         input_ndim = self.input_data.dim()
         output_ndim = self.output_data.dim()
         
@@ -225,6 +232,17 @@ class ReservoirDataset(Dataset):
                 f"Expected:\n"
                 f"  3D: Input (N, H, W, T, C), Output (N, H, W, T)\n"
                 f"  4D: Input (N, X, Y, Z, T, C), Output (N, X, Y, Z, T)"
+            )
+        
+        # Validate against expected dimensions (from config)
+        if self.expected_dimensions is not None and self.dimensions != self.expected_dimensions:
+            raise ValueError(
+                f"❌ Dimension mismatch!\n"
+                f"   Config expects: {self.expected_dimensions}\n"
+                f"   Data has: {self.dimensions}\n"
+                f"   Input shape: {tuple(self.input_data.shape)}\n"
+                f"   Please update arch.dimensions in config to '{self.dimensions}' "
+                f"or use a dataset with {self.expected_dimensions} data."
             )
         
         # Store shape info
@@ -374,6 +392,7 @@ def create_dataloaders(
     input_file: Optional[str] = None,
     output_file: Optional[str] = None,
     variable: Optional[str] = None,
+    expected_dimensions: Optional[str] = None,
 ) -> Tuple[torch.utils.data.DataLoader, ...]:
     """
     Create train, validation, and test dataloaders.
@@ -398,6 +417,9 @@ def create_dataloaders(
         Output filename pattern with {mode} placeholder
     variable : str, optional
         Variable name for CO2 convention ('pressure' or 'saturation')
+    expected_dimensions : str, optional
+        Expected dimensions ('3d' or '4d') from config. If provided, validates
+        that loaded data matches. Raises error on mismatch.
     
     Returns
     -------
@@ -414,6 +436,14 @@ def create_dataloaders(
     ...     'data/norne',
     ...     input_file='norne_{mode}_input.pt',
     ...     output_file='norne_{mode}_output.pt'
+    ... )
+    
+    >>> # With dimension validation from config
+    >>> train, val, test = create_dataloaders(
+    ...     'data/norne',
+    ...     input_file='norne_{mode}_input.pt',
+    ...     output_file='norne_{mode}_output.pt',
+    ...     expected_dimensions='4d'  # From cfg.arch.dimensions
     ... )
     """
     from torch.utils.data import DataLoader
@@ -433,6 +463,7 @@ def create_dataloaders(
         "output_file": output_file,
         "variable": variable,
         "normalize": normalize,
+        "expected_dimensions": expected_dimensions,
     }
     
     # Create datasets

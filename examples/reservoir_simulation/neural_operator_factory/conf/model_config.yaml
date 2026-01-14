@@ -10,8 +10,12 @@ arch:
   # ---------------------------------------------------------------------------
   # Step 1: Problem Dimensions
   # ---------------------------------------------------------------------------
-  # '3d' = 2D spatial + time, input shape (B, H, W, T, C)
-  # '4d' = 3D spatial + time, input shape (B, X, Y, Z, T, C)
+  # '3d' = 2D spatial + time, input shape (B, H, W, T, C) - e.g., CO2 dataset
+  # '4d' = 3D spatial + time, input shape (B, X, Y, Z, T, C) - e.g., Norne dataset
+  #
+  # IMPORTANT: This must match your dataset! The data loader will validate
+  # that the loaded data matches this dimension setting.
+  # Configure dataset files in training_config.yaml -> data section.
   dimensions: 4d
   
   # ---------------------------------------------------------------------------

@@ -198,13 +198,21 @@ def main(cfg: DictConfig) -> None:
     elif num_workers is None:
         num_workers = 4  # Default fallback
 
+    # Get dimensions from config (used for model selection and data validation)
+    expected_dimensions = cfg.arch.dimensions.lower()
+    
     train_loader, val_loader, test_loader = create_dataloaders(
         data_path=cfg.data.data_path,
-        variable=cfg.data.variable,
         batch_size=cfg.training.batch_size,
         normalize=cfg.data.normalize,
         num_workers=num_workers,
         device=dist.device,
+        # Flexible file specification from config
+        input_file=cfg.data.get("input_file", None),
+        output_file=cfg.data.get("output_file", None),
+        variable=cfg.data.get("variable", None),
+        # Validate data dimensions match config
+        expected_dimensions=expected_dimensions,
     )
 
     # Print data info (only on rank 0)
@@ -214,7 +222,7 @@ def main(cfg: DictConfig) -> None:
             f"Data: Train={len(train_loader.dataset)}, Val={len(val_loader.dataset)}, Test={len(test_loader.dataset)} | Batch size={cfg.training.batch_size} per GPU (Effective: {effective_batch_size})"
         )
 
-    # Validate data dimensions before training (dynamic validation)
+    # Validate data dimensions against config
     if dist.rank == 0:
         logger.info("Validating data dimensions...")
 
@@ -222,13 +230,23 @@ def main(cfg: DictConfig) -> None:
         sample_inputs, sample_targets = next(iter(train_loader))
 
         # Validate using centralized validation function
-        validate_batch_dimensions(sample_inputs, sample_targets, cfg.data.variable)
+        validation_info = validate_batch_dimensions(sample_inputs, sample_targets, cfg.data.get("variable", "unknown"))
+        detected_dimensions = validation_info["dimensions"]
+        
+        # Check that detected dimensions match config
+        if detected_dimensions != expected_dimensions:
+            raise ValueError(
+                f"❌ Dimension mismatch! Config specifies '{expected_dimensions}' but data is '{detected_dimensions}'.\n"
+                f"   Config: arch.dimensions = {expected_dimensions}\n"
+                f"   Data: Input shape {tuple(sample_inputs.shape)} → {detected_dimensions}\n"
+                f"   Please update arch.dimensions in config to match your dataset."
+            )
 
         # Print validation summary
         print_validation_summary(
             input_shape=tuple(sample_inputs.shape),
             target_shape=tuple(sample_targets.shape),
-            variable=cfg.data.variable,
+            variable=cfg.data.get("variable", "unknown"),
             is_batch=True,
             logger=logger,
         )
