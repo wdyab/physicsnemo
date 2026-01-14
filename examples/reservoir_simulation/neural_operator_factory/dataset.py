@@ -321,8 +321,9 @@ class ReservoirDataset(Dataset):
         output_sample = self.output_data[idx]
         
         if self.normalize:
-            input_mean = self.input_mean.to(input_sample.device)
-            input_std = self.input_std.to(input_sample.device)
+            # Squeeze the batch dimension from normalization stats for single sample
+            input_mean = self.input_mean.squeeze(0).to(input_sample.device)
+            input_std = self.input_std.squeeze(0).to(input_sample.device)
             output_mean = self.output_mean.to(output_sample.device)
             output_std = self.output_std.to(output_sample.device)
             
