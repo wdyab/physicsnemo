@@ -26,7 +26,7 @@ data:
   # File naming (supports {mode} placeholder for train/val/test)
   # Option 1: CO2 convention - set variable, leave input_file/output_file null
   # Option 2: Custom files - set input_file and output_file patterns
-  variable: saturation           # 'pressure' or 'saturation' (CO2 dataset)
+  variable: pressure           # 'pressure' or 'saturation' (CO2 dataset)
   input_file: null               # e.g., 'norne_{mode}_input.pt' for custom datasets
   output_file: null              # e.g., 'norne_{mode}_output.pt' for custom datasets
   
@@ -62,7 +62,7 @@ logging:
   use_tensorboard: true
   tensorboard_dir: ./tensorboard
   use_mlflow: false
-  experiment_name: u_deeponet_3unet_saturation_deriv_l2
+  experiment_name: u_deeponet_3unet_pressure_deriv_l2
   use_wandb: false
 
 seed: 42

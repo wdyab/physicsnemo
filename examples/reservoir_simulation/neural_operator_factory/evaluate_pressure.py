@@ -28,6 +28,7 @@ import argparse
 
 from xfno import UFNONet
 from physicsnemo_unet import StandaloneUNet
+from deeponet import DeepONetWrapper
 from dataset import CO2SequestrationDataset
 from metrics import (
     mean_relative_error,
@@ -186,6 +187,21 @@ def main():
             out_channels=model_config["out_channels"],
             unet_type=model_config["unet_type"],
             **model_config["unet_kwargs"],
+        ).to(device)
+
+    elif model_type in ["deeponet", "xdeeponet"]:
+        # Create DeepONet model (xdeeponet is the new unified name)
+        model = DeepONetWrapper(
+            padding=model_config.get("padding", 8),
+            variant=model_config.get("variant", "u_deeponet"),
+            width=model_config.get("width", 64),
+            branch1_config=model_config.get("branch1_config", {}),
+            branch2_config=model_config.get("branch2_config"),
+            trunk_config=model_config.get("trunk_config", {}),
+            decoder_type=model_config.get("decoder_type", "mlp"),
+            decoder_width=model_config.get("decoder_width", 128),
+            decoder_layers=model_config.get("decoder_layers", 2),
+            decoder_activation_fn=model_config.get("decoder_activation_fn", "relu"),
         ).to(device)
 
     else:
