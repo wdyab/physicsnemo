@@ -1,4 +1,7 @@
-# Training Configuration for U-DeepONet on Saturation (8 GPU)
+# Training Configuration for U-DeepONet (3 UNet layers) on CO2 Saturation
+# Branch: Spatial with 3 U-Net layers
+# Trunk: MLP with time-only input
+# Loss: Derivative L2
 
 defaults:
   - model_config
@@ -59,7 +62,7 @@ logging:
   use_tensorboard: true
   tensorboard_dir: ./tensorboard
   use_mlflow: false
-  experiment_name: u_deeponet_saturation
+  experiment_name: u_deeponet_3unet_saturation_deriv_l2
   use_wandb: false
 
 seed: 42

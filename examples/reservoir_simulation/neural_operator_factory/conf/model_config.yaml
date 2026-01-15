@@ -16,7 +16,7 @@ arch:
   # IMPORTANT: This must match your dataset! The data loader will validate
   # that the loaded data matches this dimension setting.
   # Configure dataset files in training_config.yaml -> data section.
-  dimensions: 4d
+  dimensions: 3d
   
   # ---------------------------------------------------------------------------
   # Step 2: Model Architecture
@@ -96,7 +96,7 @@ arch:
     branch1:
       type: spatial           # 'spatial' or 'mlp'
       num_fourier_layers: 0   # 0 = pure UNet/Conv mode
-      num_unet_layers: 2
+      num_unet_layers: 3      # 3 U-Net layers as requested
       num_conv_layers: 0
       modes1: 8               # H or X dimension
       modes2: 8               # W or Y dimension
@@ -116,7 +116,7 @@ arch:
     
     # Trunk: Temporal/coordinate encoder
     trunk:
-      input_type: grid        # 'time' (t only) or 'grid' (x,y,t or x,y,z,t)
+      input_type: time        # 'time' (t only) - using time-only MLP as requested
       hidden_width: 128
       num_layers: 6
       activation_fn: sin
@@ -132,9 +132,9 @@ arch:
 # =============================================================================
 
 loss:
-  base_loss_type: relative_l2   # 'mse', 'l1', 'relative_l2', 'relative_l1'
+  base_loss_type: relative_l2   # 'mse', 'l1', 'relative_l2', 'relative_l1', 'huber'
   reduction: mean
   use_mask: true
-  use_derivative: false
-  derivative_weight: 0.5
-  derivative_dim: dx
+  use_derivative: true          # Enable derivative loss as requested
+  derivative_weight: 0.5        # Weight for derivative term
+  derivative_dim: dx            # Direction for derivative (dx, dy, dt)
