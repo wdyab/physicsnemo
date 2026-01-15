@@ -381,6 +381,17 @@ def main(cfg: DictConfig) -> None:
     else:
         raise ValueError(f"Unknown model: {model_type}. Use 'xfno' or 'xdeeponet'.")
 
+    # Initialize lazy modules with a dummy forward pass (required for DDP)
+    # This is needed because nn.LazyLinear doesn't know its input size until first forward
+    if dist.rank == 0:
+        logger.info("Initializing model with dummy forward pass...")
+    with torch.no_grad():
+        dummy_batch = next(iter(train_loader))
+        dummy_input = dummy_batch[0].to(dist.device)
+        _ = model(dummy_input)
+    if dist.rank == 0:
+        logger.info("Model initialization complete.")
+
     # Wrap model with DistributedDataParallel for multi-GPU training
     if dist.world_size > 1:
         model = DDP(

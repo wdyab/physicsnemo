@@ -188,8 +188,8 @@ def main():
             **model_config["unet_kwargs"],
         ).to(device)
 
-    elif model_type == "deeponet":
-        # Create DeepONet model
+    elif model_type in ["deeponet", "xdeeponet"]:
+        # Create DeepONet model (xdeeponet is the new unified name)
         model = DeepONetWrapper(
             padding=model_config.get("padding", 8),
             variant=model_config.get("variant", "u_deeponet"),
