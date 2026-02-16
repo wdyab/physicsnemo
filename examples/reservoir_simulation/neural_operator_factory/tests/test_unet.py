@@ -25,7 +25,7 @@ import torch
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from models.unet import UNet2D, UNet3D, UNetModule2D, UNetModule3D
+from models.unet import UNet2D, UNet3D
 
 
 class TestUNet2D:
@@ -115,9 +115,6 @@ class TestUNet2D:
         assert param_count > 0
         assert isinstance(param_count, int)
 
-    def test_alias(self):
-        """Test that UNetModule2D is an alias for UNet2D."""
-        assert UNetModule2D is UNet2D
 
 
 class TestUNet3D:
@@ -222,9 +219,6 @@ class TestUNet3D:
         model_2d = UNet2D(input_channels=32, output_channels=32).to(device)
         assert model.count_params() > model_2d.count_params()
 
-    def test_alias(self):
-        """Test that UNetModule3D is an alias for UNet3D."""
-        assert UNetModule3D is UNet3D
 
 
 class TestUNetIntegration:

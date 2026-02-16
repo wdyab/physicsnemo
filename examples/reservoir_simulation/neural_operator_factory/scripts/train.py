@@ -141,7 +141,7 @@ from physicsnemo.distributed import DistributedManager
 from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, LaunchLogger
 
-from data.dataset import create_dataloaders
+from data.dataloader import create_dataloaders
 from training.losses import get_loss_function, UnifiedLoss
 from training.metrics import mean_relative_error, mean_plume_error
 from utils.normalization import dnorm_dP
@@ -150,7 +150,7 @@ from data.validation import validate_batch_dimensions, print_validation_summary
 
 @hydra.main(version_base="1.3", config_path="../conf", config_name="training_config")
 def main(cfg: DictConfig) -> None:
-    """Main training function for FNO3D CO2 sequestration model."""
+    """Main training function for neural operator reservoir simulation models."""
 
     # Initialize distributed manager
     DistributedManager.initialize()
@@ -699,11 +699,13 @@ def main(cfg: DictConfig) -> None:
                                 thickness = np.sum(mask[:, 0])
 
                                 # Extract masked region
+                                spatial_w = targets_denorm.shape[2]
+                                num_t = targets_denorm.shape[3]
                                 y_true = targets_denorm[i][mask].reshape(
-                                    (thickness, 200, 24)
+                                    (thickness, spatial_w, num_t)
                                 )
                                 y_pred = pred_denorm[i][mask].reshape(
-                                    (thickness, 200, 24)
+                                    (thickness, spatial_w, num_t)
                                 )
 
                                 # Compute metric based on variable type

@@ -371,7 +371,3 @@ class UNet3D(nn.Module):
         """Count total number of trainable parameters."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-
-# Aliases for backward compatibility with U-FNO
-UNetModule2D = UNet2D
-UNetModule3D = UNet3D

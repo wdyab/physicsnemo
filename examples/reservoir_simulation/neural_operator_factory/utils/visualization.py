@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-Visualization utilities for CO2 sequestration predictions.
+Visualization utilities for reservoir simulation predictions.
 
 This module provides common plotting functions and grid setup
 for visualizing model predictions.

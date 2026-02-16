@@ -334,33 +334,6 @@ class ReservoirDataset(Dataset):
 
 
 # =============================================================================
-# Legacy Alias for Backward Compatibility
-# =============================================================================
-
-class CO2SequestrationDataset(ReservoirDataset):
-    """
-    Legacy alias for CO2 sequestration dataset.
-    
-    Deprecated: Use ReservoirDataset with variable='pressure' or 'saturation'.
-    """
-    
-    def __init__(
-        self,
-        data_path: Union[str, Path],
-        mode: str = "train",
-        variable: str = "pressure",
-        normalize: bool = True,
-        device: Union[str, torch.device] = "cuda",  # Ignored, kept for compatibility
-    ):
-        super().__init__(
-            data_path=data_path,
-            mode=mode,
-            variable=variable,
-            normalize=normalize,
-        )
-
-
-# =============================================================================
 # Collate Functions
 # =============================================================================
 
@@ -374,9 +347,6 @@ def collate_fn(batch):
     targets = torch.stack([item[1] for item in batch], dim=0)
     return inputs, targets
 
-
-# Legacy alias
-collate_fn_3d = collate_fn
 
 
 # =============================================================================

@@ -34,7 +34,7 @@ import argparse
 from models.xfno import UFNONet
 from models.physicsnemo_unet import StandaloneUNet
 from models.deeponet import DeepONetWrapper
-from data.dataset import CO2SequestrationDataset
+from data.dataloader import ReservoirDataset
 from training.metrics import (
     mean_plume_error,
     mean_absolute_error,
@@ -55,7 +55,7 @@ from data.validation import validate_sample_dimensions, print_validation_summary
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
-        description="Evaluate trained model on CO2 sequestration dataset"
+        description="Evaluate trained model on reservoir simulation dataset"
     )
     parser.add_argument(
         "--checkpoint",
@@ -105,12 +105,11 @@ def main():
 
     # Load test dataset
     print(f"\nLoading test dataset for {variable}...")
-    test_dataset = CO2SequestrationDataset(
+    test_dataset = ReservoirDataset(
         data_path=data_path,
         mode="test",
         variable=variable,
-        normalize=False,  # Data is already normalized
-        device="cpu",
+        normalize=False,
     )
 
     print(f"Test dataset size: {len(test_dataset)}")
@@ -234,10 +233,15 @@ def main():
     all_mpe = []
     all_r2 = []
     all_rel_l2 = []
-    all_mae_per_timestep = [[] for _ in range(24)]
-    all_mpe_per_timestep = [[] for _ in range(24)]
-    all_r2_per_timestep = [[] for _ in range(24)]
-    all_rel_l2_per_timestep = [[] for _ in range(24)]
+    # Determine number of time steps from data
+    sample_x, sample_y = test_dataset[0]
+    num_timesteps = sample_y.shape[-1]
+    spatial_width = sample_y.shape[1]
+
+    all_mae_per_timestep = [[] for _ in range(num_timesteps)]
+    all_mpe_per_timestep = [[] for _ in range(num_timesteps)]
+    all_r2_per_timestep = [[] for _ in range(num_timesteps)]
+    all_rel_l2_per_timestep = [[] for _ in range(num_timesteps)]
 
     print("Processing test samples...")
 
@@ -264,8 +268,8 @@ def main():
                 mask, thickness = extract_reservoir_mask(x_plot)
 
                 # Extract masked regions
-                y_plot_masked = y_plot[mask].reshape((thickness, 200, 24))
-                pred_plot_masked = pred_plot[mask].reshape((thickness, 200, 24))
+                y_plot_masked = y_plot[mask].reshape((thickness, spatial_width, num_timesteps))
+                pred_plot_masked = pred_plot[mask].reshape((thickness, spatial_width, num_timesteps))
 
                 # Compute overall metrics for this sample
                 mae = mean_absolute_error(pred_plot_masked, y_plot_masked)
@@ -279,7 +283,7 @@ def main():
                 all_rel_l2.append(rel_l2)
 
                 # Compute per-timestep metrics
-                for t in range(24):
+                for t in range(num_timesteps):
                     mae_t = mean_absolute_error(
                         pred_plot_masked[:, :, t], y_plot_masked[:, :, t]
                     )
@@ -329,7 +333,7 @@ def main():
     print("\nPer-timestep Metrics (averaged over all samples):")
     print("  t  |     MAE     |    MPE     |  R2 Score  | Rel L2 Error")
     print("-" * 70)
-    for t in range(24):
+    for t in range(num_timesteps):
         avg_mae_t = np.mean(all_mae_per_timestep[t])
         avg_mpe_t = np.mean(all_mpe_per_timestep[t])
         avg_r2_t = np.mean(all_r2_per_timestep[t])

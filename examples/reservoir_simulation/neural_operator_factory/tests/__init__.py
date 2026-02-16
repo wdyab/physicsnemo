@@ -14,4 +14,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the DeepONet CO2 sequestration example."""
+"""Unit tests for the neural operator factory."""

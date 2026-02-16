@@ -31,7 +31,7 @@ from torch import Tensor
 from typing import List, Optional
 
 from physicsnemo.models.unet import UNet as PhysicsNemoUNet
-from models.unet import UNetModule3D
+from models.unet import UNet3D
 
 
 # ==============================================================================

@@ -41,7 +41,7 @@ def random_seed():
 
 @pytest.fixture
 def sample_input_tensor(device):
-    """Create a sample input tensor for CO2 sequestration models."""
+    """Create a sample input tensor for reservoir simulation models."""
     # Shape: (batch, H, W, T, channels)
     # Using smaller dimensions for faster tests
     return torch.randn(2, 32, 64, 16, 12).to(device)

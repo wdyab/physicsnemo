@@ -24,11 +24,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data.dataset import (
+from data.dataloader import (
     ReservoirDataset,
-    CO2SequestrationDataset,
     collate_fn,
-    collate_fn_3d,
     create_dataloaders,
     get_dataset_info,
 )
@@ -307,7 +305,7 @@ class TestAutoDetection:
 class TestCollateFunctions:
     """Tests for collate functions."""
     
-    def test_collate_fn_3d(self, mock_3d_data):
+    def test_collate_fn(self, mock_3d_data):
         """Test collate function for 3D data."""
         data_path, dims = mock_3d_data
         ds = ReservoirDataset(data_path, mode="train", variable="pressure", normalize=False)
@@ -334,9 +332,6 @@ class TestCollateFunctions:
         assert inputs.shape == (2, dims["X"], dims["Y"], dims["Z"], dims["T"], dims["C"])
         assert targets.shape == (2, dims["X"], dims["Y"], dims["Z"], dims["T"])
     
-    def test_collate_fn_3d_alias(self):
-        """Test that collate_fn_3d is an alias for collate_fn."""
-        assert collate_fn_3d is collate_fn
 
 
 # =============================================================================
@@ -407,31 +402,6 @@ class TestDataloaders:
                 num_workers=0,
                 expected_dimensions="4d"
             )
-
-
-# =============================================================================
-# Test Legacy Compatibility
-# =============================================================================
-
-class TestLegacyCompatibility:
-    """Tests for backward compatibility with CO2SequestrationDataset."""
-    
-    def test_co2_dataset_alias(self, mock_3d_data):
-        """Test that CO2SequestrationDataset works as before."""
-        data_path, dims = mock_3d_data
-        
-        ds = CO2SequestrationDataset(
-            data_path,
-            mode="train",
-            variable="pressure",
-            normalize=True
-        )
-        
-        assert len(ds) == dims["N"]
-        assert ds.dimensions == "3d"
-        
-        x, y = ds[0]
-        assert x.shape == (dims["H"], dims["W"], dims["T"], dims["C"])
 
 
 # =============================================================================

@@ -39,7 +39,7 @@ from physicsnemo.models.layers import (
 )
 from physicsnemo.models.mlp import FullyConnected
 
-from models.unet import UNetModule3D
+from models.unet import UNet3D
 from models.physicsnemo_unet import PhysicsNemoUNet3D, StandaloneUNet
 
 
@@ -165,7 +165,7 @@ class UFNO(Module):
             if self.unet_type == "custom":
                 # Use custom UNet3D
                 self.unet_modules.append(
-                    UNetModule3D(
+                    UNet3D(
                         self.width,
                         self.width,
                         kernel_size=unet_kernel_size,

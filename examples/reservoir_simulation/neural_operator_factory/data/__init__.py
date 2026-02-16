@@ -18,11 +18,9 @@
 Data loading, validation, and preprocessing utilities.
 """
 
-from data.dataset import (
+from data.dataloader import (
     ReservoirDataset,
-    CO2SequestrationDataset,
     collate_fn,
-    collate_fn_3d,
     create_dataloaders,
     get_dataset_info,
 )
@@ -41,11 +39,9 @@ from data.scalar_utils import (
 )
 
 __all__ = [
-    # Dataset
+    # Dataloader
     "ReservoirDataset",
-    "CO2SequestrationDataset",
     "collate_fn",
-    "collate_fn_3d",
     "create_dataloaders",
     "get_dataset_info",
     # Validation

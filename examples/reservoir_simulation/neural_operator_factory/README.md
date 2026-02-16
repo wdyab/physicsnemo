@@ -15,7 +15,7 @@ neural_operator_factory/
 │
 ├── data/                           # Data loading and validation
 │   ├── __init__.py                 # Exports dataset and validation utilities
-│   ├── dataset.py                  # ReservoirDataset (3D/4D), dataloaders
+│   ├── dataloader.py               # ReservoirDataset (3D/4D), dataloaders
 │   ├── validation.py               # Shape validation, dimension detection
 │   └── scalar_utils.py             # MIONet scalar channel detection
 │
@@ -83,7 +83,7 @@ Both 2D spatial (`DeepONet`, `DeepONetWrapper`) and 3D spatial (`DeepONet3D`, `D
 
 ## Dataset Support
 
-The `ReservoirDataset` class (`data/dataset.py`) supports:
+The `ReservoirDataset` class (`data/dataloader.py`) supports:
 
 - **3D data**: `(N, H, W, T, C)` input, `(N, H, W, T)` output (e.g., CO2 sequestration)
 - **4D data**: `(N, X, Y, Z, T, C)` input, `(N, X, Y, Z, T)` output (e.g., Norne field)

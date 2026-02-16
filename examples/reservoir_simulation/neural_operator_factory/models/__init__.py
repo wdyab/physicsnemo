@@ -34,7 +34,7 @@ from models.deeponet import (
     DeepONetWrapper,
     DeepONet3DWrapper,
 )
-from models.unet import UNet2D, UNet3D, UNetModule2D, UNetModule3D
+from models.unet import UNet2D, UNet3D
 from models.physicsnemo_unet import (
     PhysicsNemoUNet2D,
     PhysicsNemoUNet3D,
@@ -59,8 +59,6 @@ __all__ = [
     # U-Net
     "UNet2D",
     "UNet3D",
-    "UNetModule2D",
-    "UNetModule3D",
     "PhysicsNemoUNet2D",
     "PhysicsNemoUNet3D",
     "StandaloneUNet",

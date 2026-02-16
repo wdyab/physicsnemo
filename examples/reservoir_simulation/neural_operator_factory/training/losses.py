@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-Unified loss functions for CO2 sequestration modeling.
+Unified loss functions for reservoir simulation modeling.
 
 Available base losses:
 - mse: Mean Squared Error (L2 loss)
@@ -173,12 +173,9 @@ class UnifiedLoss(nn.Module):
             derivative_dims = [derivative_dim]
         elif isinstance(derivative_dim, list):
             derivative_dims = derivative_dim
-        elif isinstance(derivative_dim, int):
-            # Support legacy format: 2 -> 'dz', 3 -> 'dx'
-            derivative_dims = ["dz" if derivative_dim == 2 else "dx"]
         else:
             raise ValueError(
-                f"derivative_dim must be str, list, or int, got {type(derivative_dim)}"
+                f"derivative_dim must be str or list of str, got {type(derivative_dim)}"
             )
 
         # Validate derivative dimensions
