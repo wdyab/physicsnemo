@@ -25,7 +25,7 @@ import torch
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from losses import SimpleRelativeL2Loss, UnifiedLoss, get_loss_function
+from training.losses import SimpleRelativeL2Loss, UnifiedLoss, get_loss_function
 
 
 class TestSimpleRelativeL2Loss:

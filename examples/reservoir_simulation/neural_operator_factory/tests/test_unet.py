@@ -25,7 +25,7 @@ import torch
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from unet import UNet2D, UNet3D, UNetModule2D, UNetModule3D
+from models.unet import UNet2D, UNet3D, UNetModule2D, UNetModule3D
 
 
 class TestUNet2D:

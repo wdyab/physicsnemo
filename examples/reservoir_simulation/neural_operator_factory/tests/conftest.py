@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared pytest fixtures for DeepONet tests."""
+"""Shared pytest fixtures for neural operator factory tests."""
 
 import sys
 from pathlib import Path

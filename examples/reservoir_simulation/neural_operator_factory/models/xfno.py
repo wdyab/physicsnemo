@@ -39,8 +39,8 @@ from physicsnemo.models.layers import (
 )
 from physicsnemo.models.mlp import FullyConnected
 
-from unet import UNetModule3D
-from physicsnemo_unet import PhysicsNemoUNet3D, StandaloneUNet
+from models.unet import UNetModule3D
+from models.physicsnemo_unet import PhysicsNemoUNet3D, StandaloneUNet
 
 
 class UFNO(Module):

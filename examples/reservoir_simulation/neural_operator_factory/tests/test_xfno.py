@@ -43,7 +43,7 @@ if not PHYSICSNEMO_AVAILABLE:
         "physicsnemo not installed - skipping U-FNO tests", allow_module_level=True
     )
 
-from xfno import UFNO, UFNONet
+from models.xfno import UFNO, UFNONet
 
 
 class TestUFNO:

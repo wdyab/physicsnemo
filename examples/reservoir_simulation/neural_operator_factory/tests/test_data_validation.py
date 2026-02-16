@@ -24,7 +24,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data_validation import (
+from data.validation import (
     detect_dimensions,
     validate_batch_dimensions,
     validate_sample_dimensions,

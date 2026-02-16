@@ -16,27 +16,32 @@
 # limitations under the License.
 
 """
-Evaluation script for U-FNO pressure prediction model.
+Evaluation script for pressure prediction model.
 Visualizes predictions and computes error metrics.
 """
+
+import sys
+from pathlib import Path
+
+# Add parent directory (neural_operator_factory/) to path for package imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from pathlib import Path
 import argparse
 
-from xfno import UFNONet
-from physicsnemo_unet import StandaloneUNet
-from deeponet import DeepONetWrapper
-from dataset import CO2SequestrationDataset
-from metrics import (
+from models.xfno import UFNONet
+from models.physicsnemo_unet import StandaloneUNet
+from models.deeponet import DeepONetWrapper
+from data.dataset import CO2SequestrationDataset
+from training.metrics import (
     mean_relative_error,
     mean_absolute_error,
     compute_r2_score,
     compute_relative_l2_error,
 )
-from utils import (
+from utils.normalization import (
     dnorm_dP,
     dnorm_inj,
     dnorm_temp,
@@ -45,7 +50,7 @@ from utils import (
     dnorm_Swi,
     extract_reservoir_mask,
 )
-from data_validation import validate_sample_dimensions, print_validation_summary
+from data.validation import validate_sample_dimensions, print_validation_summary
 
 
 def main():

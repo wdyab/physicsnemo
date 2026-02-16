@@ -45,8 +45,8 @@ from physicsnemo.models.layers import (
 )
 from physicsnemo.models.mlp import FullyConnected
 
-from unet import UNet2D, UNet3D
-from physicsnemo_unet import PhysicsNemoUNet2D, PhysicsNemoUNet3D
+from models.unet import UNet2D, UNet3D
+from models.physicsnemo_unet import PhysicsNemoUNet2D, PhysicsNemoUNet3D
 
 
 # =============================================================================

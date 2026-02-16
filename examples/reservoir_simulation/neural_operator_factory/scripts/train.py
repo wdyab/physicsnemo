@@ -15,7 +15,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Training script for U-FNO CO2 sequestration model."""
+"""Training script for neural operator reservoir simulation models."""
+
+import sys
+from pathlib import Path
+
+# Add parent directory (neural_operator_factory/) to path for package imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import hydra
 from omegaconf import DictConfig
@@ -29,9 +35,9 @@ import numpy as np
 import mlflow
 import mlflow.pytorch
 
-from xfno import UFNONet, FNO4DNet
-from physicsnemo_unet import StandaloneUNet
-from deeponet import DeepONetWrapper, DeepONet3DWrapper
+from models.xfno import UFNONet, FNO4DNet
+from models.physicsnemo_unet import StandaloneUNet
+from models.deeponet import DeepONetWrapper, DeepONet3DWrapper
 
 def print_model_architecture(model, model_type: str, dimensions: str, cfg, logger):
     """Print detailed model architecture for any model type."""
@@ -135,14 +141,14 @@ from physicsnemo.distributed import DistributedManager
 from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, LaunchLogger
 
-from dataset import create_dataloaders
-from losses import get_loss_function, UnifiedLoss
-from metrics import mean_relative_error, mean_plume_error
-from utils import dnorm_dP
-from data_validation import validate_batch_dimensions, print_validation_summary
+from data.dataset import create_dataloaders
+from training.losses import get_loss_function, UnifiedLoss
+from training.metrics import mean_relative_error, mean_plume_error
+from utils.normalization import dnorm_dP
+from data.validation import validate_batch_dimensions, print_validation_summary
 
 
-@hydra.main(version_base="1.3", config_path="conf", config_name="training_config")
+@hydra.main(version_base="1.3", config_path="../conf", config_name="training_config")
 def main(cfg: DictConfig) -> None:
     """Main training function for FNO3D CO2 sequestration model."""
 

@@ -1,372 +1,162 @@
-# U-FNO for Reservoir Simulation
+# Neural Operator Factory for Reservoir Simulation
 
-This example is part of the implementation of Neural Operator Factory, it implements an FNO family of architectures for predicting pressure and saturation fields in reservoir simulations. The implementation leverages PhysicsNeMo's core FNO layers and UNet components.
+A flexible framework for training and evaluating neural operator surrogate models for reservoir simulation, built on [PhysicsNeMo](https://github.com/NVIDIA/physicsnemo). Supports FNO, DeepONet, and U-Net architectures on both 2D and 3D spatial datasets.
 
-**Current status**: The framework has been developed and tested on 2D CO2 sequestration datasets.
-**Future work in progress**: DeepONet family of neural operators and proper support for 3D problems.
+## Directory Structure
 
-## Table of Contents
-
-- [Overview](#overview)
-- [Background](#background)
-  - [Reservoir Simulation](#reservoir-simulation)
-  - [Neural Operators](#neural-operators)
-- [Model Architectures](#model-architectures)
-- [Installation](#installation)
-- [Data Requirements](#data-requirements)
-- [Training](#training)
-- [Evaluation](#evaluation)
-- [Configuration](#configuration)
-- [Testing](#testing)
-- [Results](#results)
-- [References](#references)
-- [Citation](#citation)
-
-## Overview
-
-Reservoir simulation is essential for predicting subsurface fluid flow behavior in applications such as:
-
-- **Carbon storage**: CO2 sequestration in geological formations
-- **Oil and gas recovery**: Enhanced oil recovery and production forecasting
-- **Groundwater management**: Aquifer modeling and contamination transport
-
-Traditional numerical simulators solve the governing PDEs but are computationally expensive, especially for uncertainty quantification requiring thousands of forward simulations. Neural operators provide a fast surrogate model that can accelerate these workflows by 3-4 orders of magnitude while maintaining high accuracy. Moreover, as opposed to numerical reduced order models, neural operators provide a full physics surrogates with straight forward support data assimilation.  
-
-This example provides a flexible framework for training neural operator models on reservoir simulation data.
-
-## Background
-
-### Reservoir Simulation
-
-Reservoir simulation models **multiphase flow** through porous media, governed by:
-
-- **Darcy's law**: Relating fluid velocity to pressure gradients
-- **Mass conservation**: For each fluid phase
-- **Constitutive relations**: Relative permeability and capillary pressure curves
-
-Key output variables typically include:
-- **Pressure**: Pressure distribution or change from initial conditions
-- **Saturation**: Phase saturation fractions (e.g., gas, oil, water)
-
-### Neural Operators
-
-Unlike standard neural networks that learn point-to-point mappings, **neural operators** learn mappings between function spaces. This enables:
-
-- **Resolution invariance**: Train on coarse grids, evaluate on fine grids
-- **Generalization**: Handle varying input functions (e.g., permeability fields)
-- **Efficiency**: Single forward pass vs. iterative PDE solvers
-
-The **Fourier Neural Operator (FNO)** parameterizes the kernel integral in Fourier space, enabling efficient global convolutions. **U-FNO** enhances FNO with U-Net skip connections to capture multi-scale features critical for heterogeneous reservoirs.
-
-To be implemeted: The **Deep Operator Network (DeepONet)** allows for seperation of space and time variables, significantly improving effeciency. **U-DeepONet** enhances DeepONet with U-Net skip connections to capture multi-scale features critical for heterogeneous reservoirs. **Fourier-DeepONet** combines the best of the two architectures. **Fourier-MIONet** Allows for further seperation input features: scalar and field variables.
+```
+neural_operator_factory/
+├── models/                         # Neural operator architectures
+│   ├── __init__.py                 # Exports all model classes
+│   ├── xfno.py                     # FNO variants: UFNO, UFNONet, FNO4D, FNO4DNet
+│   ├── deeponet.py                 # DeepONet variants (2D/3D): 7 configurable variants
+│   ├── unet.py                     # Custom UNet2D, UNet3D modules
+│   └── physicsnemo_unet.py         # PhysicsNeMo UNet wrappers, StandaloneUNet
+│
+├── data/                           # Data loading and validation
+│   ├── __init__.py                 # Exports dataset and validation utilities
+│   ├── dataset.py                  # ReservoirDataset (3D/4D), dataloaders
+│   ├── validation.py               # Shape validation, dimension detection
+│   └── scalar_utils.py             # MIONet scalar channel detection
+│
+├── training/                       # Loss functions and evaluation metrics
+│   ├── __init__.py                 # Exports losses and metrics
+│   ├── losses.py                   # UnifiedLoss, SimpleRelativeL2Loss
+│   └── metrics.py                  # NumPy + PyTorch metrics, PhysicsNeMo imports
+│
+├── utils/                          # Utility functions
+│   ├── __init__.py                 # Exports normalization and visualization
+│   ├── normalization.py            # CO2 dataset denormalization helpers
+│   └── visualization.py            # Plotting utilities
+│
+├── scripts/                        # Runnable entry points
+│   ├── train.py                    # Main training script (DDP, AMP, MLflow)
+│   ├── evaluate_pressure.py        # Pressure model evaluation
+│   └── evaluate_saturation.py      # Saturation model evaluation
+│
+├── conf/                           # Hydra configuration
+│   ├── model_config.yaml           # Architecture and loss settings
+│   └── training_config.yaml        # Training hyperparameters and data paths
+│
+├── tests/                          # Unit tests
+│   ├── conftest.py                 # Shared fixtures
+│   ├── test_xfno.py               # FNO model tests
+│   ├── test_unet.py               # UNet model tests
+│   ├── test_losses.py             # Loss function tests
+│   ├── test_dataset.py            # Dataset and dataloader tests
+│   └── test_data_validation.py    # Data validation tests
+│
+├── docs/                           # Documentation
+├── README.md
+└── requirements.txt
+```
 
 ## Model Architectures
 
-| Model | Description | Use Case |
-|-------|-------------|----------|
-| **U-FNO** | FNO + U-Net skip connections | Best accuracy for heterogeneous reservoirs |
-| **Conv-FNO** | FNO + 3D convolutions | Balanced performance/computational cost |
-| **Standard FNO** | Pure Fourier layers | Fast training, global patterns |
-| **Standalone UNet** | PhysicsNeMo's UNet | Baseline comparison |
+### FNO Family (`models/xfno.py`)
 
-### U-FNO Architecture
+| Model | Description | Dimensions |
+|-------|-------------|------------|
+| **FNO** | Pure Fourier Neural Operator | 3D, 4D |
+| **U-FNO** | FNO + U-Net skip connections | 3D only |
+| **Conv-FNO** | FNO + 3D convolutions | 3D only |
+| **FNO4D** | 4D FNO (3D spatial + time) | 4D only |
 
-```
-Input (B, H, W, T, C)
-    │
-    ▼
-┌─────────────────┐
-│  Lifting Layer  │  (MLP or Conv: C → width)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────────┐
-│     Standard FNO Layers (×N)        │
-│  ┌─────────────┐  ┌──────────────┐  │
-│  │ SpectralConv│ +│ 1×1×1 Conv   │  │
-│  └─────────────┘  └──────────────┘  │
-└────────┬────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────┐
-│   U-Net Enhanced FNO Layers (×M)    │
-│  ┌─────────────┐  ┌──────────────┐  │
-│  │ SpectralConv│ +│ 1×1×1 Conv   │  │
-│  └──────┬──────┘  └──────────────┘  │
-│         │                           │
-│         ▼                           │
-│  ┌──────────────┐                   │
-│  │   3D U-Net   │ (skip connection) │
-│  └──────────────┘                   │
-└────────┬────────────────────────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Decoder (MLP or CNN)  │  (width → out_channels)
-└────────┬────────┘
-         │
-         ▼
-Output (B, H, W, T)
-```
+### DeepONet Family (`models/deeponet.py`)
 
-## Installation
+| Variant | Description |
+|---------|-------------|
+| `deeponet` | Basic DeepONet (MLP branch) |
+| `u_deeponet` | U-Net enhanced spatial branch |
+| `fourier_deeponet` | Fourier layers in spatial branch |
+| `conv_deeponet` | Convolutional spatial branch |
+| `hybrid_deeponet` | Fourier + U-Net + Conv combination |
+| `mionet` | Multi-input operator network (2 branches) |
+| `fourier_mionet` | MIONet with Fourier layers |
 
-### Prerequisites
+Both 2D spatial (`DeepONet`, `DeepONetWrapper`) and 3D spatial (`DeepONet3D`, `DeepONet3DWrapper`) versions are provided.
 
-- Python 3.8+
-- PyTorch 2.0+
-- PhysicsNeMo (installed from source or pip)
-- CUDA-capable GPU (recommended: 16GB+ VRAM)
+### U-Net Baselines (`models/unet.py`, `models/physicsnemo_unet.py`)
 
-### Install Dependencies
+- Custom `UNet2D` / `UNet3D` with 3-level encoder-decoder
+- PhysicsNeMo `StandaloneUNet` wrapper for baseline comparison
 
-```bash
-# Navigate to the example directory
-cd examples/reservoir_simulation/neural_operator_factory
+## Dataset Support
 
-# Install additional dependencies (if any)
-pip install -r requirements.txt
-```
+The `ReservoirDataset` class (`data/dataset.py`) supports:
 
-## Data Requirements
+- **3D data**: `(N, H, W, T, C)` input, `(N, H, W, T)` output (e.g., CO2 sequestration)
+- **4D data**: `(N, X, Y, Z, T, C)` input, `(N, X, Y, Z, T)` output (e.g., Norne field)
+- Automatic dimension detection and validation
+- Flexible file naming patterns
+- Distributed data loading with normalization sharing
 
-### Input Data Format
+## Quick Start
 
-The model expects input tensors of shape `(B, H, W, T, C)` where:
-- `B`: Batch size
-- `H`: Height (spatial dimension)
-- `W`: Width (spatial dimension)
-- `T`: Time steps
-- `C`: Input channels (problem-dependent)
+### Training
 
-The number of input channels and their meaning depend on your specific reservoir simulation problem. Configure the model's `in_channels` parameter accordingly.
-
-### Output Data
-
-- **Pressure model**: Predicts pressure field of shape `(B, H, W, T)`
-- **Saturation model**: Predicts saturation field of shape `(B, H, W, T)`
-
-### Data Directory Structure
-
-```
-data/
-├── train/
-│   ├── inputs/          # Input tensors
-│   └── outputs/         # Target tensors (pressure or saturation)
-├── val/
-│   ├── inputs/
-│   └── outputs/
-└── test/
-    ├── inputs/
-    └── outputs/
-```
-
-## Training
-
-### Configuration
-
-1. Edit the data path in `conf/training_config.yaml`:
+1. Configure your data path in `conf/training_config.yaml`:
    ```yaml
    data:
      data_path: /path/to/your/data
      variable: pressure  # or 'saturation'
    ```
 
-2. Select the model architecture in `conf/model_config.yaml`:
+2. Select model and dimensions in `conf/model_config.yaml`:
    ```yaml
    arch:
-     model_type: ufno  # Options: 'ufno', 'unet'
-     ufno:
-       in_channels: 12        # Adjust based on your data
-       out_channels: 1
-       num_fno_layers: 3
-       num_unet_layers: 3     # Set > 0 for U-FNO
-       num_conv_layers: 0     # Set > 0 for Conv-FNO (mutually exclusive with unet_layers)
+     dimensions: 3d        # '3d' or '4d'
+     model: xfno           # 'xfno' or 'xdeeponet'
    ```
 
-### Single GPU Training
+3. Run training:
+   ```bash
+   # Single GPU
+   python scripts/train.py
+
+   # Multi-GPU (DDP)
+   torchrun --nproc_per_node=4 scripts/train.py
+   ```
+
+### Evaluation
 
 ```bash
-python train_fno3d.py
+python scripts/evaluate_pressure.py --checkpoint checkpoints/best_model_pressure_*.pth
+python scripts/evaluate_saturation.py --checkpoint checkpoints/best_model_saturation_*.pth
 ```
 
-### Multi-GPU Training (DDP)
+### Testing
 
 ```bash
-# 4 GPUs on a single node
-torchrun --nproc_per_node=4 train_fno3d.py
-
-# 8 GPUs on a single node
-torchrun --nproc_per_node=8 train_fno3d.py
-```
-
-### Monitoring Training
-
-Training progress is logged to:
-- **Console**: Loss values and learning rate
-- **TensorBoard**: `tensorboard --logdir=./tensorboard`
-- **MLflow** (optional): Enable in config with `logging.use_mlflow: true`
-
-## Evaluation
-
-After training, evaluate the model on the test set:
-
-```bash
-# Evaluate pressure model
-python evaluate_pressure.py --checkpoint checkpoints/best_model_pressure_ufno_physicsnemo.pth
-
-# Evaluate saturation model
-python evaluate_saturation.py --checkpoint checkpoints/best_model_saturation_ufno_physicsnemo.pth
-```
-
-### Evaluation Metrics
-
-- **Relative L2 Error**: `||pred - target||_2 / ||target||_2`
-- **Mean Absolute Error (MAE)**
-- **R² Score**
-- **Per-timestep errors**: Track accuracy evolution over time
-
-## Configuration
-
-The configuration system uses two YAML files:
-
-### `conf/model_config.yaml`
-Model architecture settings (rarely changed between runs):
-- Model type (U-FNO, Conv-FNO, UNet)
-- Network dimensions (width, Fourier modes)
-- Activation functions
-- Loss function configuration
-
-### `conf/training_config.yaml`
-Training parameters (frequently tuned):
-- Data paths and variable selection
-- Batch size, learning rate, epochs
-- Optimizer and scheduler settings
-- Logging and checkpointing
-
-### Example Configurations
-
-**U-FNO (Default)**:
-```yaml
-arch:
-  model_type: ufno
-  ufno:
-    num_fno_layers: 3
-    num_unet_layers: 3
-    num_conv_layers: 0
-    unet_type: physicsnemo
-```
-
-**Conv-FNO**:
-```yaml
-arch:
-  model_type: ufno
-  ufno:
-    num_fno_layers: 3
-    num_unet_layers: 0
-    num_conv_layers: 3
-```
-
-**Pure FNO**:
-```yaml
-arch:
-  model_type: ufno
-  ufno:
-    num_fno_layers: 6
-    num_unet_layers: 0
-    num_conv_layers: 0
-```
-
-## Testing
-
-Run the unit tests to verify the implementation:
-
-```bash
-# Navigate to the example directory
 cd examples/reservoir_simulation/neural_operator_factory
-
-# Run all tests
 pytest tests/ -v
-
-# Run specific test files
-pytest tests/test_unet.py -v      # Test UNet models
-pytest tests/test_losses.py -v    # Test loss functions
-pytest tests/test_ufno.py -v      # Test U-FNO model
-
-# Run with coverage
-pytest tests/ -v --cov=. --cov-report=html
-
-# Run only fast tests (skip slow tests)
-pytest tests/ -v -m "not slow"
 ```
 
-### Test Coverage
+## Loss Functions
 
-The test suite covers:
-- **UNet models**: Forward pass, gradient flow, parameter counting
-- **Loss functions**: MSE, L1, Relative L2, masking, derivatives
-- **U-FNO model**: Different configurations, lifting/decoder types, UNet types
+| Loss | Description |
+|------|-------------|
+| `mse` | Mean Squared Error |
+| `l1` | Mean Absolute Error |
+| `relative_l2` | Scale-invariant relative L2 |
+| `huber` | Smooth L1 (Huber) |
 
-## Results
+Optional features: domain masking, physics-informed spatial derivative constraints.
 
-Results from testing on a 2D CO2 sequestration dataset:
+## Evaluation Metrics
 
-<!-- TODO: Add your experimental results here -->
+NumPy-based (post-processing): MRE, MPE, MAE, R², PSNR, Relative L1/L2, Normalized MSE
 
-| Model | Variable | Relative L2 Error | Training Time |
-|-------|----------|-------------------|---------------|
-| U-FNO | Pressure | TBD | TBD |
-| U-FNO | Saturation | TBD | TBD |
-| Conv-FNO | Pressure | TBD | TBD |
-| Conv-FNO | Saturation | TBD | TBD |
+PyTorch-based (training): `mse_torch`, `rmse_torch`, `mae_torch`, `relative_l2_torch`, `r2_score_torch`, `psnr_torch`
 
-### Computational Requirements
-
-- **GPU Memory**: ~12-16 GB for batch_size=4
-- **Training Time**: Varies based on dataset size and model configuration
+PhysicsNeMo imports: `mse`, `rmse`, `Mean`, `Variance`, `WeightedMean`, `WeightedVariance`
 
 ## References
 
-1. **U-FNO Paper**:
-   > Wen, G., Li, Z., Azizzadenesheli, K., Anandkumar, A., & Benson, S. M. (2022).
-   > U-FNO—An enhanced Fourier neural operator-based deep-learning model for multiphase flow.
-   > *Advances in Water Resources*, 163, 104180.
-   > https://doi.org/10.1016/j.advwatres.2022.104180
-
-2. **Original FNO Paper**:
-   > Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhattacharya, K., Stuart, A., & Anandkumar, A. (2021).
-   > Fourier Neural Operator for Parametric Partial Differential Equations.
-   > *ICLR 2021*.
-   > https://arxiv.org/abs/2010.08895
-
-3. **PhysicsNeMo**:
-   > NVIDIA PhysicsNeMo: A deep learning framework for physics-ML applications.
-   > https://github.com/NVIDIA/physicsnemo
-
-## Citation
-
-If you use this code in your research, please cite:
-
-```bibtex
-@article{wen2022ufno,
-  title={U-FNO—An enhanced Fourier neural operator-based deep-learning model for multiphase flow},
-  author={Wen, Gege and Li, Zongyi and Azizzadenesheli, Kamyar and Anandkumar, Anima and Benson, Sally M},
-  journal={Advances in Water Resources},
-  volume={163},
-  pages={104180},
-  year={2022},
-  publisher={Elsevier},
-  doi={10.1016/j.advwatres.2022.104180}
-}
-
-@misc{physicsnemo,
-  title={PhysicsNeMo: A deep learning framework for physics-ML applications},
-  author={NVIDIA},
-  howpublished={\url{https://github.com/NVIDIA/physicsnemo}},
-  year={2024}
-}
-```
+1. Wen, G. et al. (2022). "U-FNO—An enhanced Fourier neural operator-based deep-learning model for multiphase flow." *Advances in Water Resources*, 163, 104180.
+2. Li, Z. et al. (2021). "Fourier Neural Operator for Parametric Partial Differential Equations." *ICLR 2021*.
+3. Lu, L. et al. (2021). "Learning nonlinear operators via DeepONet." *Nature Machine Intelligence*, 3, 218-229.
 
 ## License
 
-This project is licensed under the Apache License 2.0. See the [LICENSE](../../../LICENSE.txt) file for details.
+Apache License 2.0. See [LICENSE](../../../LICENSE.txt) for details.
