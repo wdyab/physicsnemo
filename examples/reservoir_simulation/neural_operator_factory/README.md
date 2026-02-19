@@ -26,13 +26,14 @@ neural_operator_factory/
 │
 ├── utils/                          # Utility functions
 │   ├── __init__.py                 # Exports normalization and visualization
-│   ├── normalization.py            # CO2 dataset denormalization helpers
-│   └── visualization.py            # Plotting utilities
+│   ├── co2_normalization.py        # CO2-specific denormalization helpers
+│   ├── co2_visualization.py        # CO2-specific plotting utilities
+│   └── padding.py                  # Dimension-agnostic spatial padding
 │
 ├── scripts/                        # Runnable entry points
 │   ├── train.py                    # Main training script (DDP, AMP, MLflow)
-│   ├── evaluate_pressure.py        # Pressure model evaluation
-│   └── evaluate_saturation.py      # Saturation model evaluation
+│   ├── evaluate_co2_pressure.py    # CO2-specific pressure evaluation
+│   └── evaluate_co2_saturation.py  # CO2-specific saturation evaluation
 │
 ├── conf/                           # Hydra configuration
 │   ├── model_config.yaml           # Architecture and loss settings
@@ -44,7 +45,8 @@ neural_operator_factory/
 │   ├── test_unet.py               # UNet model tests
 │   ├── test_losses.py             # Loss function tests
 │   ├── test_dataset.py            # Dataset and dataloader tests
-│   └── test_data_validation.py    # Data validation tests
+│   ├── test_data_validation.py    # Data validation tests
+│   └── test_padding.py             # Padding utility tests
 │
 ├── docs/                           # Documentation
 ├── README.md
@@ -121,8 +123,9 @@ The `ReservoirDataset` class (`data/dataloader.py`) supports:
 ### Evaluation
 
 ```bash
-python scripts/evaluate_pressure.py --checkpoint checkpoints/best_model_pressure_*.pth
-python scripts/evaluate_saturation.py --checkpoint checkpoints/best_model_saturation_*.pth
+# CO2-specific evaluation scripts
+python scripts/evaluate_co2_pressure.py --checkpoint checkpoints/best_model_pressure_*.pth
+python scripts/evaluate_co2_saturation.py --checkpoint checkpoints/best_model_saturation_*.pth
 ```
 
 ### Testing

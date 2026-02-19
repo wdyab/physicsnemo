@@ -16,8 +16,10 @@
 # limitations under the License.
 
 """
-Evaluation script for saturation prediction model.
-Visualizes predictions and computes error metrics.
+CO2-specific evaluation script for pressure prediction.
+
+This script uses CO2 dataset conventions (permeability mask, grid spacing,
+time labels, dnorm_dP denormalization) and is not intended for other datasets.
 """
 
 import sys
@@ -36,12 +38,13 @@ from models.physicsnemo_unet import StandaloneUNet
 from models.deeponet import DeepONetWrapper
 from data.dataloader import ReservoirDataset
 from training.metrics import (
-    mean_plume_error,
+    mean_relative_error,
     mean_absolute_error,
     compute_r2_score,
     compute_relative_l2_error,
 )
-from utils.normalization import (
+from utils.co2_normalization import (
+    dnorm_dP,
     dnorm_inj,
     dnorm_temp,
     dnorm_P,
@@ -66,9 +69,9 @@ def main():
     parser.add_argument(
         "--variable",
         type=str,
-        default="saturation",
+        default="pressure",
         choices=["saturation", "pressure"],
-        help="Variable to evaluate (default: saturation)",
+        help="Variable to evaluate (default: pressure)",
     )
     parser.add_argument(
         "--data_path",
@@ -230,16 +233,16 @@ def main():
 
     # Lists to accumulate metrics across all samples
     all_mae = []
-    all_mpe = []
+    all_mre = []
     all_r2 = []
     all_rel_l2 = []
     # Determine number of time steps from data
     sample_x, sample_y = test_dataset[0]
-    num_timesteps = sample_y.shape[-1]
-    spatial_width = sample_y.shape[1]
+    num_timesteps = sample_y.shape[-1]  # Last dim is T for both 3D (H,W,T) and 4D
+    spatial_width = sample_y.shape[1]   # W dimension
 
     all_mae_per_timestep = [[] for _ in range(num_timesteps)]
-    all_mpe_per_timestep = [[] for _ in range(num_timesteps)]
+    all_mre_per_timestep = [[] for _ in range(num_timesteps)]
     all_r2_per_timestep = [[] for _ in range(num_timesteps)]
     all_rel_l2_per_timestep = [[] for _ in range(num_timesteps)]
 
@@ -264,21 +267,24 @@ def main():
                 y_plot = y_plot_batch[i]
                 pred_plot = pred_plot_batch[i]
 
+                # Denormalize pressure predictions
+                pred_plot_denorm = dnorm_dP(pred_plot)
+
                 # Extract mask
                 mask, thickness = extract_reservoir_mask(x_plot)
 
                 # Extract masked regions
                 y_plot_masked = y_plot[mask].reshape((thickness, spatial_width, num_timesteps))
-                pred_plot_masked = pred_plot[mask].reshape((thickness, spatial_width, num_timesteps))
+                pred_plot_masked = pred_plot_denorm[mask].reshape((thickness, spatial_width, num_timesteps))
 
                 # Compute overall metrics for this sample
                 mae = mean_absolute_error(pred_plot_masked, y_plot_masked)
-                mpe = mean_plume_error(pred_plot_masked, y_plot_masked)
+                mre = mean_relative_error(pred_plot_masked, y_plot_masked)
                 r2 = compute_r2_score(pred_plot_masked, y_plot_masked)
                 rel_l2 = compute_relative_l2_error(pred_plot_masked, y_plot_masked)
 
                 all_mae.append(mae)
-                all_mpe.append(mpe)
+                all_mre.append(mre)
                 all_r2.append(r2)
                 all_rel_l2.append(rel_l2)
 
@@ -287,7 +293,7 @@ def main():
                     mae_t = mean_absolute_error(
                         pred_plot_masked[:, :, t], y_plot_masked[:, :, t]
                     )
-                    mpe_t = mean_plume_error(
+                    mre_t = mean_relative_error(
                         pred_plot_masked[:, :, t], y_plot_masked[:, :, t]
                     )
                     r2_t = compute_r2_score(
@@ -298,7 +304,7 @@ def main():
                     )
 
                     all_mae_per_timestep[t].append(mae_t)
-                    all_mpe_per_timestep[t].append(mpe_t)
+                    all_mre_per_timestep[t].append(mre_t)
                     all_r2_per_timestep[t].append(r2_t)
                     all_rel_l2_per_timestep[t].append(rel_l2_t)
 
@@ -312,8 +318,8 @@ def main():
     # Compute average and std metrics across all samples
     avg_mae = np.mean(all_mae)
     std_mae = np.std(all_mae)
-    avg_mpe = np.mean(all_mpe)
-    std_mpe = np.std(all_mpe)
+    avg_mre = np.mean(all_mre)
+    std_mre = np.std(all_mre)
     avg_r2 = np.mean(all_r2)
     std_r2 = np.std(all_r2)
     avg_rel_l2 = np.mean(all_rel_l2)
@@ -324,22 +330,22 @@ def main():
     print(f"Error Metrics (averaged over {len(test_dataset)} test samples):")
     print("=" * 80)
 
-    print(f"Mean Absolute Error (MAE):   {avg_mae:.6f} ± {std_mae:.6f}")
-    print(f"Mean Plume Error (MPE):      {avg_mpe:.6f} ± {std_mpe:.6f}")
+    print(f"Mean Absolute Error (MAE):   {avg_mae:.4f} ± {std_mae:.4f} bar")
+    print(f"Mean Relative Error (MRE):   {avg_mre:.4f} ± {std_mre:.4f}")
     print(f"R2 Score:                    {avg_r2:.4f} ± {std_r2:.4f}")
     print(f"Relative L2 Error:           {avg_rel_l2:.6f} ± {std_rel_l2:.6f}")
 
     # Compute per-timestep averages
     print("\nPer-timestep Metrics (averaged over all samples):")
-    print("  t  |     MAE     |    MPE     |  R2 Score  | Rel L2 Error")
+    print("  t  |   MAE (bar)  |    MRE     |  R2 Score  | Rel L2 Error")
     print("-" * 70)
     for t in range(num_timesteps):
         avg_mae_t = np.mean(all_mae_per_timestep[t])
-        avg_mpe_t = np.mean(all_mpe_per_timestep[t])
+        avg_mre_t = np.mean(all_mre_per_timestep[t])
         avg_r2_t = np.mean(all_r2_per_timestep[t])
         avg_rel_l2_t = np.mean(all_rel_l2_per_timestep[t])
         print(
-            f"  {t:2d} | {avg_mae_t:11.6f} | {avg_mpe_t:10.6f} | {avg_r2_t:10.6f} | {avg_rel_l2_t:10.6f}"
+            f"  {t:2d} |   {avg_mae_t:8.4f}   | {avg_mre_t:10.6f} | {avg_r2_t:10.6f} | {avg_rel_l2_t:10.6f}"
         )
 
     # Now visualize one sample (sample 0) for illustration
@@ -358,6 +364,9 @@ def main():
     x_plot = x.cpu().numpy()
     y_plot = y.cpu().numpy()
     pred_plot = pred.squeeze(0).cpu().numpy()
+
+    # Denormalize pressure predictions
+    pred_plot_denorm = dnorm_dP(pred_plot)
 
     # Extract mask (reservoir have different thickness as marked in the permeability map)
     mask, thickness = extract_reservoir_mask(x_plot)
@@ -429,25 +438,25 @@ def main():
         # Row 2: Ground truth
         plt.subplot(4, 3, j + 4)
         pcolor(y_plot[:, :, t][mask].reshape((thickness, -1)))
-        plt.title("$S_g$ (-), " + f"t={time_print[t]}")
+        plt.title("$dP$ (bar), " + f"t={time_print[t]}")
         plt.colorbar(fraction=0.02)
         plt.xlim([0, 3500])
 
         # Row 3: Prediction
         plt.subplot(4, 3, j + 7)
-        pcolor(pred_plot[:, :, t][mask].reshape((thickness, -1)))
-        plt.title("$\hat{S}_g$ (-), " + f"t={time_print[t]}")
+        pcolor(pred_plot_denorm[:, :, t][mask].reshape((thickness, -1)))
+        plt.title("$\hat{dP}$ (bar), " + f"t={time_print[t]}")
         plt.colorbar(fraction=0.02)
         plt.xlim([0, 3500])
 
         # Row 4: Error
         plt.subplot(4, 3, j + 10)
-        error = pred_plot[:, :, t][mask].reshape((thickness, -1)) - y_plot[:, :, t][
-            mask
-        ].reshape((thickness, -1))
+        error = pred_plot_denorm[:, :, t][mask].reshape((thickness, -1)) - y_plot[
+            :, :, t
+        ][mask].reshape((thickness, -1))
         pcolor(error)
         plt.colorbar(fraction=0.02)
-        plt.title("|$S_g-\hat{S}_g$|, " + f"t={time_print[t]}")
+        plt.title("|$dP-\hat{dP}$|, " + f"t={time_print[t]}")
         plt.xlim([0, 3500])
 
     plt.tight_layout()
@@ -455,7 +464,7 @@ def main():
     # Save figure
     output_dir = Path("visualizations")
     output_dir.mkdir(exist_ok=True)
-    output_file = output_dir / f"saturation_prediction_sample0.png"
+    output_file = output_dir / f"pressure_prediction_sample0.png"
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     print(f"\nSaved visualization to: {output_file}")
 

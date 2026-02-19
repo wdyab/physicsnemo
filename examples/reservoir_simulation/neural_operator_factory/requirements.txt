@@ -1,4 +1,4 @@
-# Requirements for U-FNO CO2 Sequestration Example
+# Requirements for Neural Operator Factory
 # Install with: pip install -r requirements.txt
 
 # Core dependencies
@@ -12,10 +12,10 @@ omegaconf>=2.3.0
 # cd modulus && pip install -e .
 # Note: physicsnemo provides DistributedManager, Module, launch utils, and logging
 
-# Experiment tracking (required for train_fno3d.py)
+# Experiment tracking (required for scripts/train.py)
 mlflow>=2.0.0
 
-# Testing utilities (required for test_fno3d.py)
+# Testing utilities
 loguru>=0.6.0
 
 # Optional: Enhanced visualization

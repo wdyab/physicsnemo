@@ -15,10 +15,11 @@
 # limitations under the License.
 
 """
-Visualization utilities for reservoir simulation predictions.
+CO2-specific visualization utilities.
 
-This module provides common plotting functions and grid setup
-for visualizing model predictions.
+This module provides plotting functions and grid setup specific to the
+CO2 sequestration dataset (2D cross-section visualizations with
+CO2-specific grid spacing and labels).
 """
 
 import numpy as np

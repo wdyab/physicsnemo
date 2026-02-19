@@ -15,9 +15,17 @@
 # limitations under the License.
 
 """
-Training utilities: loss functions and evaluation metrics.
+Training utilities: loss functions, evaluation metrics, and autoregressive helpers.
 """
 
+from training.ar_utils import (
+    teacher_forcing_step,
+    rollout_step,
+    ar_validate_full_rollout,
+    sample_start_index,
+    slice_input_window,
+    slice_target_window,
+)
 from training.losses import (
     SimpleRelativeL2Loss,
     UnifiedLoss,
@@ -44,6 +52,13 @@ from training.metrics import (
 )
 
 __all__ = [
+    # Autoregressive
+    "teacher_forcing_step",
+    "rollout_step",
+    "ar_validate_full_rollout",
+    "sample_start_index",
+    "slice_input_window",
+    "slice_target_window",
     # Losses
     "SimpleRelativeL2Loss",
     "UnifiedLoss",

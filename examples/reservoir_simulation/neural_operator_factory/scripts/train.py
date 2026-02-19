@@ -143,9 +143,36 @@ from physicsnemo.launch.logging import PythonLogger, LaunchLogger
 
 from data.dataloader import create_dataloaders
 from training.losses import get_loss_function, UnifiedLoss
-from training.metrics import mean_relative_error, mean_plume_error
-from utils.normalization import dnorm_dP
+from training.metrics import (
+    mean_relative_error,
+    mean_plume_error,
+    mean_absolute_error,
+    compute_relative_l2_error,
+)
+from utils.co2_normalization import dnorm_dP
 from data.validation import validate_batch_dimensions, print_validation_summary
+from training.ar_utils import (
+    teacher_forcing_step,
+    rollout_step,
+    ar_validate_full_rollout,
+)
+
+# Registry of denormalization functions that can be selected via config.
+_DENORM_REGISTRY = {
+    "dnorm_dP": dnorm_dP,
+}
+
+# Registry of validation metric functions (numpy-based, operate on flat arrays).
+def _rmse_np(y_pred, y_true):
+    return float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+
+_METRIC_REGISTRY = {
+    "rmse": ("RMSE", "val_rmse", _rmse_np),
+    "mae": ("MAE", "val_mae", mean_absolute_error),
+    "mre": ("MRE", "val_mre", mean_relative_error),
+    "mpe": ("MPE", "val_mpe", mean_plume_error),
+    "relative_l2": ("RelL2", "val_relative_l2", compute_relative_l2_error),
+}
 
 
 @hydra.main(version_base="1.3", config_path="../conf", config_name="training_config")
@@ -179,7 +206,7 @@ def main(cfg: DictConfig) -> None:
             torch.backends.cudnn.benchmark = True
 
     # Initialize logger
-    logger = PythonLogger(name="fno3d_co2")
+    logger = PythonLogger(name="nof_train")
     logger.file_logging()
     LaunchLogger.initialize()
 
@@ -582,14 +609,37 @@ def main(cfg: DictConfig) -> None:
         if dist.rank == 0:
             logger.success("Starting training from scratch...")
 
-    # Print training start header (only on rank 0)
-    if dist.rank == 0:
-        logger.info("=" * 80)
-        logger.info("Starting training...")
-        logger.info("=" * 80)
+    # ---------------------------------------------------------------------------
+    # Determine training regime
+    # ---------------------------------------------------------------------------
+    regime = cfg.training.get("regime", "full_mapping").lower()
+    if regime == "autoregressive":
+        ar_cfg = cfg.training.autoregressive
+        ar_L = ar_cfg.input_window
+        ar_K = ar_cfg.output_window
+        tf_epochs = ar_cfg.teacher_forcing_epochs
+        ro_epochs = ar_cfg.rollout_epochs
+        total_epochs = tf_epochs + ro_epochs
+        ar_max_steps = ar_cfg.max_rollout_steps
+        ar_checkpointing = ar_cfg.gradient_checkpointing
+
+        if dist.rank == 0:
+            logger.info("=" * 80)
+            logger.info(f"AUTOREGRESSIVE TRAINING | L={ar_L}, K={ar_K}")
+            logger.info(f"  Phase 1 — Teacher Forcing: {tf_epochs} epochs")
+            logger.info(f"  Phase 2 — Rollout (max {ar_max_steps} steps): {ro_epochs} epochs")
+            logger.info(f"  Total: {total_epochs} epochs")
+            logger.info("=" * 80)
+    else:
+        total_epochs = cfg.training.epochs
+        if dist.rank == 0:
+            logger.info("=" * 80)
+            logger.info("FULL-MAPPING TRAINING")
+            logger.info(f"  Epochs: {total_epochs}")
+            logger.info("=" * 80)
 
     # Training loop
-    for epoch in range(start_epoch, cfg.training.epochs + 1):
+    for epoch in range(start_epoch, total_epochs + 1):
         # Set epoch for distributed sampler (ensures proper shuffling across epochs)
         if hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
@@ -602,44 +652,73 @@ def main(cfg: DictConfig) -> None:
             total_loss = 0.0
 
             for batch_idx, (inputs, targets) in enumerate(train_loader):
-                # Move data to GPU
                 inputs = inputs.to(dist.device)
                 targets = targets.to(dist.device)
-
                 optimizer.zero_grad()
 
-                # Forward pass with optional AMP
-                if cfg.training.use_amp:
-                    with autocast():
-                        pred = model(inputs)
-                        # UnifiedLoss always accepts inputs (for masking/derivatives)
-                        loss = loss_fn(pred, targets, inputs)
-                    # Backward pass with gradient scaling
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
+                if regime == "autoregressive":
+                    # Determine phase: teacher forcing or rollout
+                    is_rollout_phase = epoch > tf_epochs
+                    if is_rollout_phase:
+                        loss = rollout_step(
+                            model, inputs, targets, loss_fn,
+                            L=ar_L, K=ar_K,
+                            max_steps=ar_max_steps,
+                            use_checkpointing=ar_checkpointing,
+                        )
+                    else:
+                        loss = teacher_forcing_step(
+                            model, inputs, targets, loss_fn,
+                            L=ar_L, K=ar_K,
+                        )
                 else:
-                    pred = model(inputs)
-                    # UnifiedLoss always accepts inputs (for masking/derivatives)
-                    loss = loss_fn(pred, targets, inputs)
-                    loss.backward()
-                    optimizer.step()
+                    # Full-mapping: single forward pass over entire trajectory
+                    if cfg.training.use_amp:
+                        with autocast():
+                            pred = model(inputs)
+                            loss = loss_fn(pred, targets, inputs)
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
+                        # Aggregate and continue (skip the common backward below)
+                        if dist.world_size > 1:
+                            loss_tensor = loss.detach().clone()
+                            torch.distributed.all_reduce(
+                                loss_tensor, op=torch.distributed.ReduceOp.SUM
+                            )
+                            total_loss += loss_tensor / dist.world_size
+                        else:
+                            total_loss += loss.detach()
+                        continue
+                    else:
+                        pred = model(inputs)
+                        loss = loss_fn(pred, targets, inputs)
 
-                # Aggregate loss across GPUs for accurate logging
+                # Common backward pass (AR mode, or full-mapping without AMP)
+                loss.backward()
+                optimizer.step()
+
                 if dist.world_size > 1:
                     loss_tensor = loss.detach().clone()
                     torch.distributed.all_reduce(
                         loss_tensor, op=torch.distributed.ReduceOp.SUM
                     )
-                    loss_tensor = loss_tensor / dist.world_size
-                    total_loss += loss_tensor
+                    total_loss += loss_tensor / dist.world_size
                 else:
                     total_loss += loss.detach()
 
             avg_train_loss = total_loss / len(train_loader)
+
+            # Log phase info for AR
+            if regime == "autoregressive" and dist.rank == 0:
+                phase_name = "ROLLOUT" if epoch > tf_epochs else "TEACHER-FORCING"
+                if epoch == tf_epochs + 1:
+                    logger.info("=" * 40)
+                    logger.info("Switching to ROLLOUT phase")
+                    logger.info("=" * 40)
+
             log.log_epoch({"loss": avg_train_loss})
 
-            # Log to MLFlow (only on rank 0)
             if cfg.logging.use_mlflow and dist.rank == 0:
                 mlflow.log_metric("train_loss", float(avg_train_loss), step=epoch)
 
@@ -677,58 +756,63 @@ def main(cfg: DictConfig) -> None:
                         else:
                             total_val_loss += val_loss.detach()
 
-                        # Calculate MRE on rank 0 only (for logging)
+                        # Calculate validation metric on rank 0 only (for logging)
                         if dist.rank == 0:
-                            # Denormalize predictions and targets based on variable type
                             pred_cpu = pred.cpu().numpy()
                             targets_cpu = targets.cpu().numpy()
                             inputs_cpu = inputs.cpu().numpy()
 
-                            # Denormalize predictions and targets (only for pressure)
-                            if cfg.data.variable == "pressure":
-                                pred_denorm = dnorm_dP(pred_cpu)
-                                targets_denorm = dnorm_dP(targets_cpu)
-                            else:  # saturation - already in physical units [0, 1]
+                            # Optional denormalization (config-driven)
+                            denorm_name = cfg.data.get("denormalize_fn", None)
+                            if denorm_name and denorm_name in _DENORM_REGISTRY:
+                                denorm_fn = _DENORM_REGISTRY[denorm_name]
+                                pred_denorm = denorm_fn(pred_cpu)
+                                targets_denorm = denorm_fn(targets_cpu)
+                            else:
                                 pred_denorm = pred_cpu
                                 targets_denorm = targets_cpu
 
-                            # Compute appropriate metric for each sample in the batch
+                            # Resolve metric function from config
+                            val_metric_choice = cfg.data.get("val_metric", "rmse")
+                            if val_metric_choice not in _METRIC_REGISTRY:
+                                raise ValueError(
+                                    f"Unknown val_metric '{val_metric_choice}'. "
+                                    f"Choices: {list(_METRIC_REGISTRY.keys())}"
+                                )
+                            _, _, metric_fn = _METRIC_REGISTRY[val_metric_choice]
+
+                            use_mask = cfg.data.get("use_reservoir_mask", False)
+
                             for i in range(pred_denorm.shape[0]):
-                                # Extract mask from input (permeability channel)
-                                mask = inputs_cpu[i, :, :, 0, 0] != 0
-                                thickness = np.sum(mask[:, 0])
+                                if use_mask:
+                                    mask = inputs_cpu[i, :, :, 0, 0] != 0
+                                    y_pred = pred_denorm[i][mask]
+                                    y_true = targets_denorm[i][mask]
+                                else:
+                                    y_pred = pred_denorm[i].ravel()
+                                    y_true = targets_denorm[i].ravel()
 
-                                # Extract masked region
-                                spatial_w = targets_denorm.shape[2]
-                                num_t = targets_denorm.shape[3]
-                                y_true = targets_denorm[i][mask].reshape(
-                                    (thickness, spatial_w, num_t)
-                                )
-                                y_pred = pred_denorm[i][mask].reshape(
-                                    (thickness, spatial_w, num_t)
-                                )
-
-                                # Compute metric based on variable type
-                                if cfg.data.variable == "pressure":
-                                    # MRE for pressure
-                                    metric = mean_relative_error(y_pred, y_true)
-                                else:  # saturation
-                                    # MPE for saturation
-                                    metric = mean_plume_error(y_pred, y_true)
-                                mre_list.append(metric)
+                                mre_list.append(metric_fn(y_pred, y_true))
 
                 avg_val_loss = total_val_loss / len(val_loader)
                 avg_metric = np.mean(mre_list) if len(mre_list) > 0 else 0.0
 
-                # Determine metric name based on variable type
-                metric_name = "MRE" if cfg.data.variable == "pressure" else "MPE"
-                metric_key = "val_mre" if cfg.data.variable == "pressure" else "val_mpe"
+                # Metric display name and logging key from config
+                val_metric_choice = cfg.data.get("val_metric", "rmse")
+                metric_name, metric_key, _ = _METRIC_REGISTRY[val_metric_choice]
+
+                is_ratio_metric = val_metric_choice in ("mre", "mpe", "relative_l2")
 
                 # Print validation metrics (only on rank 0)
                 if dist.rank == 0:
-                    logger.info(
-                        f"Epoch {epoch}: Val Loss = {avg_val_loss:.6f} | Val {metric_name} = {avg_metric:.6f} ({avg_metric * 100:.2f}%)"
-                    )
+                    if is_ratio_metric:
+                        logger.info(
+                            f"Epoch {epoch}: Val Loss = {avg_val_loss:.6f} | Val {metric_name} = {avg_metric:.6f} ({avg_metric * 100:.2f}%)"
+                        )
+                    else:
+                        logger.info(
+                            f"Epoch {epoch}: Val Loss = {avg_val_loss:.6f} | Val {metric_name} = {avg_metric:.6f}"
+                        )
 
                 # Log to MLFlow (only on rank 0)
                 if cfg.logging.use_mlflow and dist.rank == 0:
@@ -741,9 +825,14 @@ def main(cfg: DictConfig) -> None:
 
                     # Print and log best validation loss (only on rank 0)
                     if dist.rank == 0:
-                        logger.success(
-                            f"New best validation: Loss = {best_val_loss:.6f} | {metric_name} = {best_val_mre:.6f} ({best_val_mre * 100:.2f}%)"
-                        )
+                        if is_ratio_metric:
+                            logger.success(
+                                f"New best validation: Loss = {best_val_loss:.6f} | {metric_name} = {best_val_mre:.6f} ({best_val_mre * 100:.2f}%)"
+                            )
+                        else:
+                            logger.success(
+                                f"New best validation: Loss = {best_val_loss:.6f} | {metric_name} = {best_val_mre:.6f}"
+                            )
 
                     # Log best loss to MLFlow (only on rank 0)
                     if cfg.logging.use_mlflow and dist.rank == 0:
@@ -826,7 +915,7 @@ def main(cfg: DictConfig) -> None:
                                 "epoch": epoch,
                                 "model_state_dict": model_to_save.state_dict(),
                                 "val_loss": best_val_loss,
-                                "val_mre": best_val_mre,
+                                metric_key: best_val_mre,
                                 "model_config": model_config,
                             },
                             best_model_path,
@@ -839,23 +928,27 @@ def main(cfg: DictConfig) -> None:
         # Learning rate scheduling (StepLR steps automatically every step_size epochs)
         scheduler.step()
 
+    # Resolve metric metadata once for final summary / MLflow
+    val_metric_choice = cfg.data.get("val_metric", "rmse")
+    metric_name, metric_key, _ = _METRIC_REGISTRY[val_metric_choice]
+    is_ratio_metric = val_metric_choice in ("mre", "mpe", "relative_l2")
+
     # Print training completion (only on rank 0)
     if dist.rank == 0:
-        metric_name = "MRE" if cfg.data.variable == "pressure" else "MPE"
-        logger.success("Training completed! 🎉")
-        logger.info(
-            f"Best validation: Loss = {best_val_loss:.6f} | {metric_name} = {best_val_mre:.6f} ({best_val_mre * 100:.2f}%)"
-        )
+        logger.success("Training completed!")
+        if is_ratio_metric:
+            logger.info(
+                f"Best validation: Loss = {best_val_loss:.6f} | {metric_name} = {best_val_mre:.6f} ({best_val_mre * 100:.2f}%)"
+            )
+        else:
+            logger.info(
+                f"Best validation: Loss = {best_val_loss:.6f} | {metric_name} = {best_val_mre:.6f}"
+            )
 
     # End MLFlow run (only on rank 0)
     if cfg.logging.use_mlflow and dist.rank == 0:
-        metric_key = (
-            "final_best_val_mre"
-            if cfg.data.variable == "pressure"
-            else "final_best_val_mpe"
-        )
         mlflow.log_metric("final_best_val_loss", float(best_val_loss))
-        mlflow.log_metric(metric_key, float(best_val_mre))
+        mlflow.log_metric(f"final_best_{metric_key}", float(best_val_mre))
         mlflow.end_run()
         logger.info("MLFlow run completed")
 

@@ -1,7 +1,4 @@
-# Training Configuration for U-DeepONet (3 UNet layers) on CO2 Saturation
-# Branch: Spatial with 3 U-Net layers
-# Trunk: MLP with time-only input
-# Loss: Derivative L2
+# Neural Operator Factory — Training Configuration
 
 defaults:
   - model_config
@@ -21,21 +18,42 @@ data:
   # - 3d: expects (N, H, W, T, C) input, (N, H, W, T) output
   # - 4d: expects (N, X, Y, Z, T, C) input, (N, X, Y, Z, T) output
   
-  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
+  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne #/lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
   
   # File naming (supports {mode} placeholder for train/val/test)
   # Option 1: CO2 convention - set variable, leave input_file/output_file null
   # Option 2: Custom files - set input_file and output_file patterns
-  variable: pressure           # 'pressure' or 'saturation' (CO2 dataset)
-  input_file: null               # e.g., 'norne_{mode}_input.pt' for custom datasets
-  output_file: null              # e.g., 'norne_{mode}_output.pt' for custom datasets
+  variable: saturation           # 'pressure' or 'saturation' (CO2 dataset)
+  input_file: norne_{mode}_input.pt               # e.g., 'norne_{mode}_input.pt' for custom datasets
+  output_file: norne_{mode}_swat.pt              # e.g., 'norne_{mode}_output.pt' for custom datasets
   
   normalize: false
-  num_workers: 4
+  num_workers: 1
+
+  # ---------------------------------------------------------------------------
+  # Validation Metric Configuration (dataset-agnostic)
+  # ---------------------------------------------------------------------------
+  # val_metric: Which metric to compute during validation.
+  #   Choices: 'rmse', 'mae', 'mre', 'mpe', 'relative_l2'
+  #   Default: 'rmse' (works for any dataset without assumptions).
+  #   CO2 examples: 'mre' for pressure, 'mpe' for saturation.
+  val_metric: rmse
+
+  # use_reservoir_mask: Apply a permeability-based reservoir mask before
+  #   computing the validation metric. Only meaningful for the CO2 dataset
+  #   where channel 0 of the input is a permeability field.
+  #   Default: false (no masking — works for any dataset).
+  use_reservoir_mask: false
+
+  # denormalize_fn: Name of a denormalization function to apply to
+  #   predictions and targets before computing validation metrics.
+  #   Choices: 'dnorm_dP' (CO2 pressure), null (no denormalization).
+  #   Default: null (no denormalization — works for any dataset).
+  denormalize_fn: null
 
 training:
-  batch_size: 4
-  epochs: 100
+  batch_size: 1
+  epochs: 200                   # used by full_mapping only; ignored by autoregressive
   initial_lr: 0.001
   checkpoint_freq: 10
   checkpoint_dir: ./checkpoints
@@ -44,6 +62,22 @@ training:
   patience: 20
   use_amp: false
   use_graphs: true
+
+  # ---------------------------------------------------------------------------
+  # Training Regime
+  # ---------------------------------------------------------------------------
+  # full_mapping:    Predict entire trajectory in one forward pass (default).
+  # autoregressive:  Predict K timesteps from L context timesteps,
+  #                  with two-phase training (teacher forcing then rollout).
+  regime: autoregressive
+
+  autoregressive:
+    input_window: 1            # L: number of context timesteps fed to model
+    output_window: 3           # K: timesteps predicted per step (DeepONet: any K; xFNO: L+K >= 2*time_modes)
+    teacher_forcing_epochs: 30 # Phase 1: model sees ground-truth inputs (learns physics)
+    rollout_epochs: 20         # Phase 2: model sees its own predictions (learns self-correction)
+    max_rollout_steps: 4       # Max chained AR steps per iteration (rollout phase)
+    gradient_checkpointing: true
 
 optimizer:
   type: adam
@@ -62,7 +96,7 @@ logging:
   use_tensorboard: true
   tensorboard_dir: ./tensorboard
   use_mlflow: false
-  experiment_name: u_deeponet_3unet_pressure_deriv_l2
+  experiment_name: nof_training
   use_wandb: false
 
 seed: 42

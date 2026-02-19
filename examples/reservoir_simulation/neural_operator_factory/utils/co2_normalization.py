@@ -15,10 +15,10 @@
 # limitations under the License.
 
 """
-Utility functions for reservoir simulation data processing.
+CO2-specific denormalization and utility functions.
 
-This module provides denormalization functions and other utilities
-for the CO2 sequestration dataset.
+This module provides denormalization functions specific to the CO2
+sequestration dataset. For other datasets, these are not needed.
 """
 
 import numpy as np

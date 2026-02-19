@@ -41,6 +41,11 @@ from physicsnemo.models.mlp import FullyConnected
 
 from models.unet import UNet3D
 from models.physicsnemo_unet import PhysicsNemoUNet3D, StandaloneUNet
+from utils.padding import (
+    compute_right_pad_to_multiple,
+    compute_right_pad_to_multiple_per_dim,
+    pad_spatial_right,
+)
 
 
 class UFNO(Module):
@@ -395,6 +400,8 @@ class UFNONet(nn.Module):
         else:
             self.padding = padding
 
+        self.time_modes = modes3
+
         self.ufno = UFNO(
             modes1=modes1,
             modes2=modes2,
@@ -407,27 +414,57 @@ class UFNONet(nn.Module):
             **kwargs,
         )
 
-    def forward(self, x: Tensor) -> Tensor:
-        """Forward pass with padding/de-padding."""
-        batchsize = x.shape[0]
-        size_x, size_y, size_z = x.shape[1], x.shape[2], x.shape[3]
+    def forward(
+        self, x: Tensor, target_times: Tensor = None,
+    ) -> Tensor:
+        """Forward pass with padding/de-padding.
 
-        # Apply padding
-        x = F.pad(x, (0, 0, 0, self.padding, 0, self.padding), "replicate")
-        x = F.pad(x, (0, 0, 0, 0, 0, 0, 0, self.padding), "constant", 0)
+        Parameters
+        ----------
+        x : Tensor
+            Input ``(B, H, W, T_in, C)``.
+        target_times : Tensor, optional
+            Explicit target time coordinates ``(K,)`` or ``(K, 1)``.
+            When provided and K != T_in, the time axis is padded so the
+            FNO operates on at least L+K timesteps, and the output is
+            cropped to the last K timesteps.
+
+        Returns
+        -------
+        Tensor  ``(B, H, W, T_out)`` where T_out = K if target_times given,
+                else T_in.
+        """
+        h, w, t_in = x.shape[1], x.shape[2], x.shape[3]
+
+        K = target_times.shape[0] if target_times is not None else None
+
+        if K is not None and K != t_in:
+            desired_t = t_in + K
+            min_t = max(desired_t, 2 * self.time_modes)
+            extra = min_t - t_in
+            x = pad_spatial_right(
+                x, spatial_ndim=3,
+                right_pad=(0, 0, extra), mode="replicate",
+            )
+            t_padded = x.shape[3]
+        else:
+            K = None
+            t_padded = t_in
+
+        pad_h, pad_w, pad_t = compute_right_pad_to_multiple(
+            (h, w, t_padded), multiple=8, min_right_pad=self.padding
+        )
+        x = pad_spatial_right(
+            x, spatial_ndim=3, right_pad=(pad_h, pad_w, pad_t), mode="replicate"
+        )
 
         x = self.ufno(x)
 
-        # Remove padding
-        x = x.view(
-            batchsize,
-            size_x + self.padding,
-            size_y + self.padding,
-            size_z + self.padding,
-            -1,
-        )[..., : -self.padding, : -self.padding, : -self.padding, :]
+        if K is not None:
+            x = x[:, :h, :w, t_in:t_in + K, :]
+        else:
+            x = x[:, :h, :w, :t_in, :]
 
-        # Squeeze out channel dimension: (B, H, W, T, 1) -> (B, H, W, T)
         return x.squeeze(-1)
 
     def count_params(self) -> int:
@@ -673,6 +710,8 @@ class FNO4DNet(nn.Module):
             self.padding = list(padding) + [0] * (4 - len(padding))
             self.padding = self.padding[:4]
 
+        self.time_modes = modes4
+
         self.fno4d = FNO4D(
             modes1=modes1,
             modes2=modes2,
@@ -685,35 +724,60 @@ class FNO4DNet(nn.Module):
             **kwargs,
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(
+        self, x: Tensor, target_times: Tensor = None,
+    ) -> Tensor:
         """Forward pass with padding/de-padding.
 
-        Input: (B, X, Y, Z, T, C)
-        Output: (B, X, Y, Z, T)
-        """
-        pad_x, pad_y, pad_z, pad_t = self.padding
+        Parameters
+        ----------
+        x : Tensor
+            Input ``(B, X, Y, Z, T_in, C)``.
+        target_times : Tensor, optional
+            Explicit target time coordinates ``(K,)`` or ``(K, 1)``.
+            When provided and K != T_in, the time axis is padded so the
+            FNO operates on at least L+K timesteps, and the output is
+            cropped to the last K timesteps.
 
-        # Pad: F.pad operates on last dimensions first
-        # Order: (channel_left, channel_right, T_left, T_right, Z_left, Z_right, ...)
-        x = F.pad(
+        Returns
+        -------
+        Tensor  ``(B, X, Y, Z, T_out)`` where T_out = K if target_times given,
+                else T_in.
+        """
+        x0, y0, z0, t_in = x.shape[1], x.shape[2], x.shape[3], x.shape[4]
+
+        K = target_times.shape[0] if target_times is not None else None
+
+        if K is not None and K != t_in:
+            desired_t = t_in + K
+            min_t = max(desired_t, 2 * self.time_modes)
+            extra = min_t - t_in
+            x = pad_spatial_right(
+                x, spatial_ndim=4,
+                right_pad=(0, 0, 0, extra), mode="replicate",
+            )
+            t_padded = x.shape[4]
+        else:
+            K = None
+            t_padded = t_in
+
+        pad_x, pad_y, pad_z, pad_t = compute_right_pad_to_multiple_per_dim(
+            (x0, y0, z0, t_padded), multiple=8, min_right_pad=self.padding
+        )
+        x = pad_spatial_right(
             x,
-            (0, 0, 0, pad_t, 0, pad_z, 0, pad_y, 0, pad_x),
+            spatial_ndim=4,
+            right_pad=(pad_x, pad_y, pad_z, pad_t),
             mode="replicate",
         )
 
         x = self.fno4d(x)
 
-        # Remove padding
-        if pad_x > 0:
-            x = x[:, :-pad_x, :, :, :, :]
-        if pad_y > 0:
-            x = x[:, :, :-pad_y, :, :, :]
-        if pad_z > 0:
-            x = x[:, :, :, :-pad_z, :, :]
-        if pad_t > 0:
-            x = x[:, :, :, :, :-pad_t, :]
+        if K is not None:
+            x = x[:, :x0, :y0, :z0, t_in:t_in + K, :]
+        else:
+            x = x[:, :x0, :y0, :z0, :t_in, :]
 
-        # Squeeze channel dimension: (B, X, Y, Z, T, 1) -> (B, X, Y, Z, T)
         return x.squeeze(-1)
 
     def count_params(self) -> int:

@@ -15,10 +15,10 @@
 # limitations under the License.
 
 """
-Utility functions: normalization, visualization, and helpers.
+Utility functions: padding (generic) and CO2-specific normalization/visualization.
 """
 
-from utils.normalization import (
+from utils.co2_normalization import (
     dnorm_dP,
     dnorm_inj,
     dnorm_temp,
@@ -28,15 +28,21 @@ from utils.normalization import (
     extract_reservoir_mask,
     denormalize_inputs,
 )
-from utils.visualization import (
+from utils.co2_visualization import (
     setup_plotting_grid,
     get_time_labels,
     create_pcolor_func,
     plot_4x3_comparison,
 )
+from utils.padding import (
+    compute_right_pad_to_multiple,
+    compute_right_pad_to_multiple_per_dim,
+    pad_right_nd,
+    pad_spatial_right,
+)
 
 __all__ = [
-    # Normalization
+    # CO2-specific normalization
     "dnorm_dP",
     "dnorm_inj",
     "dnorm_temp",
@@ -45,9 +51,14 @@ __all__ = [
     "dnorm_Swi",
     "extract_reservoir_mask",
     "denormalize_inputs",
-    # Visualization
+    # CO2-specific visualization
     "setup_plotting_grid",
     "get_time_labels",
     "create_pcolor_func",
     "plot_4x3_comparison",
+    # Padding (generic)
+    "compute_right_pad_to_multiple",
+    "compute_right_pad_to_multiple_per_dim",
+    "pad_right_nd",
+    "pad_spatial_right",
 ]

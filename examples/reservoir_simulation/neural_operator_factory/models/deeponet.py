@@ -47,6 +47,7 @@ from physicsnemo.models.mlp import FullyConnected
 
 from models.unet import UNet2D, UNet3D
 from models.physicsnemo_unet import PhysicsNemoUNet2D, PhysicsNemoUNet3D
+from utils.padding import compute_right_pad_to_multiple, pad_spatial_right
 
 
 # =============================================================================
@@ -454,15 +455,40 @@ class DeepONetWrapper(nn.Module):
             decoder_activation_fn=decoder_activation_fn
         )
     
-    def forward(self, x: Tensor, x_branch2: Tensor = None) -> Tensor:
+    def forward(
+        self, x: Tensor, x_branch2: Tensor = None, target_times: Tensor = None,
+    ) -> Tensor:
+        """Forward pass.
+
+        Parameters
+        ----------
+        x : Tensor
+            Input ``(B, H, W, T_in, C)``.
+        x_branch2 : Tensor, optional
+            Secondary branch input (MIONet variants).
+        target_times : Tensor, optional
+            Explicit trunk query coordinates ``(K,)`` or ``(K, 1)``.
+            When provided the trunk evaluates at these K points instead of
+            extracting time values from ``x``.  This enables autoregressive
+            temporal bundling where K != T_in.
+
+        Returns
+        -------
+        Tensor  ``(B, H, W, T_out)`` where T_out = K if target_times given,
+                else T_in.
+        """
         H, W = x.shape[1], x.shape[2]
-        
-        x = F.pad(x, (0, 0, 0, 0, 0, self.padding), "replicate")
-        x = F.pad(x, (0, 0, 0, 0, 0, 0, 0, self.padding), 'constant', 0)
+
+        pad_h, pad_w = compute_right_pad_to_multiple(
+            (H, W), multiple=8, min_right_pad=self.padding
+        )
+        x = pad_spatial_right(x, spatial_ndim=2, right_pad=(pad_h, pad_w), mode="replicate")
         
         x_spatial = x.permute(0, 4, 1, 2, 3)[..., 0].permute(0, 2, 3, 1)
         
-        if self.trunk_input == 'grid':
+        if target_times is not None:
+            x_trunk = target_times if target_times.dim() == 2 else target_times.unsqueeze(-1)
+        elif self.trunk_input == 'grid':
             x_trunk = x[0, 0, 0, :, -3:]
         else:
             x_trunk = x[0, 0, 0, :, -1].unsqueeze(-1)
@@ -790,25 +816,42 @@ class DeepONet3DWrapper(nn.Module):
             decoder_activation_fn=decoder_activation_fn
         )
     
-    def forward(self, x: Tensor, x_branch2: Tensor = None) -> Tensor:
+    def forward(
+        self, x: Tensor, x_branch2: Tensor = None, target_times: Tensor = None,
+    ) -> Tensor:
+        """Forward pass.
+
+        Parameters
+        ----------
+        x : Tensor
+            Input ``(B, X, Y, Z, T_in, C)``.
+        x_branch2 : Tensor, optional
+            Secondary branch input (MIONet variants).
+        target_times : Tensor, optional
+            Explicit trunk query coordinates ``(K,)`` or ``(K, 1)``.
+            When provided the trunk evaluates at these K points instead of
+            extracting time values from ``x``.  This enables autoregressive
+            temporal bundling where K != T_in.
+
+        Returns
+        -------
+        Tensor  ``(B, X, Y, Z, T_out)`` where T_out = K if target_times given,
+                else T_in.
+        """
         X, Y, Z = x.shape[1], x.shape[2], x.shape[3]
-        
-        # Calculate padding
-        if self.padding > 0:
-            pad_x = max((8 - (X % 8)) % 8, self.padding)
-            pad_y = max((8 - (Y % 8)) % 8, self.padding)
-            pad_z = max((8 - (Z % 8)) % 8, self.padding)
-        else:
-            pad_x = (8 - (X % 8)) % 8 if X % 8 != 0 else 0
-            pad_y = (8 - (Y % 8)) % 8 if Y % 8 != 0 else 0
-            pad_z = (8 - (Z % 8)) % 8 if Z % 8 != 0 else 0
-        
-        if pad_x > 0 or pad_y > 0 or pad_z > 0:
-            x = F.pad(x, (0, 0, 0, 0, 0, pad_z, 0, pad_y, 0, pad_x), "replicate")
+
+        pad_x, pad_y, pad_z = compute_right_pad_to_multiple(
+            (X, Y, Z), multiple=8, min_right_pad=self.padding
+        )
+        x = pad_spatial_right(
+            x, spatial_ndim=3, right_pad=(pad_x, pad_y, pad_z), mode="replicate"
+        )
         
         x_spatial = x[:, :, :, :, 0, :]
         
-        if self.trunk_input == 'grid':
+        if target_times is not None:
+            x_trunk = target_times if target_times.dim() == 2 else target_times.unsqueeze(-1)
+        elif self.trunk_input == 'grid':
             x_trunk = x[0, 0, 0, 0, :, -4:]
         else:
             x_trunk = x[0, 0, 0, 0, :, -1].unsqueeze(-1)

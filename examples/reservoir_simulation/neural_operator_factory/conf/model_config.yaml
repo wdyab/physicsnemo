@@ -16,7 +16,7 @@ arch:
   # IMPORTANT: This must match your dataset! The data loader will validate
   # that the loaded data matches this dimension setting.
   # Configure dataset files in training_config.yaml -> data section.
-  dimensions: 3d
+  dimensions: 4d
   
   # ---------------------------------------------------------------------------
   # Step 2: Model Architecture
@@ -24,6 +24,8 @@ arch:
   # 'xfno'      = Fourier Neural Operator variants
   # 'xdeeponet' = DeepONet variants
   model: xdeeponet
+
+
 
   # ===========================================================================
   # xFNO Configuration
@@ -43,7 +45,7 @@ arch:
     # Fourier modes per dimension
     modes1: 10                # H or X dimension
     modes2: 10                # W or Y dimension
-    modes3: 10                # T or Z dimension
+    modes3: 10                # T dimension (3d) or Z dimension (4d)
     modes4: 6                 # T dimension (4d only, ignored for 3d)
     
     # Layer counts
@@ -51,14 +53,14 @@ arch:
     
     # Lifting/Decoder
     lifting_type: mlp         # 'mlp' or 'conv' (3d only)
-    lifting_layers: 2
-    lifting_width: 2
+    lifting_layers: 1
+    lifting_width: 36
     decoder_type: mlp         # 'mlp' or 'conv' (3d only)
     decoder_layers: 1
     decoder_width: 128
     decoder_activation_fn: relu
     
-    # --- 3d only options (ignored for 4d) ---
+    # --- 3d only options (ignored for 4d) --- 4D U-Net is not supported
     num_unet_layers: 0        # >0 enables U-FNO
     num_conv_layers: 0        # >0 enables Conv-FNO
     unet_type: physicsnemo    # 'custom' or 'physicsnemo'
@@ -68,6 +70,9 @@ arch:
     
     # --- 4d only options ---
     coord_features: true      # Add (x, y, z, t) coordinate features
+
+
+
 
   # ===========================================================================
   # xDeepONet Configuration
@@ -86,10 +91,9 @@ arch:
   #   - hybrid_deeponet: Fourier + UNet + Conv combination
   #   - mionet: Two-branch architecture
   #   - fourier_mionet: Two-branch with Fourier layers
-  
   xdeeponet:
     variant: u_deeponet
-    width: 64
+    width: 128
     padding: 8
     
     # Branch 1: Primary spatial encoder
@@ -98,16 +102,16 @@ arch:
       num_fourier_layers: 0   # 0 = pure UNet/Conv mode
       num_unet_layers: 3      # 3 U-Net layers as requested
       num_conv_layers: 0
-      modes1: 8               # H or X dimension
-      modes2: 8               # W or Y dimension
-      modes3: 6               # Z dimension (4d only, ignored for 3d)
-      kernel_size: 3
+      modes1: 8               # H or X dimension - Only for Fourier layers
+      modes2: 8               # W or Y dimension - Only for Fourier layers
+      modes3: 6               # Z dimension (4d only, ignored for 3d) - Only for Fourier layers
+      kernel_size: 3           # Kernel size for Fourier layers
       dropout: 0.0
-      unet_impl: custom       # 'custom' or 'physicsnemo'
-      activation_fn: sin
+      unet_impl: physicsnemo       # 'custom' or 'physicsnemo'
+      activation_fn: tanh
     
     # Branch 2: Secondary encoder (for mionet/fourier_mionet only)
-    # Note: in_features is auto-discovered from input data
+    # Note: in_features (scalar) or in_channels (vector) is auto-discovered from input data
     branch2:
       type: mlp
       hidden_width: 64
@@ -127,14 +131,15 @@ arch:
     decoder_layers: 2
     decoder_activation_fn: relu
 
+
+
 # =============================================================================
 # Loss Function Configuration
 # =============================================================================
-
 loss:
   base_loss_type: relative_l2   # 'mse', 'l1', 'relative_l2', 'relative_l1', 'huber'
   reduction: mean
-  use_mask: true
-  use_derivative: true          # Enable derivative loss as requested
+  use_mask: false
+  use_derivative: false          # Enable derivative loss as requested
   derivative_weight: 0.5        # Weight for derivative term
   derivative_dim: dx            # Direction for derivative (dx, dy, dt)
