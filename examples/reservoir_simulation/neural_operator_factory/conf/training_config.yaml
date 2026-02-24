@@ -48,8 +48,6 @@ data:
   mask:
     enabled: true
 
-  # Legacy CO2-specific settings (use mask section above for new datasets)
-  use_reservoir_mask: false
   denormalize_fn: null
 
 training:

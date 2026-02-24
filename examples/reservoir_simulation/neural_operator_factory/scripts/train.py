@@ -488,8 +488,7 @@ def main(cfg: DictConfig) -> None:
             loss_info = f"Train Loss: {cfg.loss.base_loss_type.upper()} | Val Loss: {cfg.loss.base_loss_type.upper()}"
             if cfg.loss.use_derivative:
                 loss_info += f" (+Derivative w={cfg.loss.derivative_weight})"
-            if cfg.loss.use_mask:
-                loss_info += " (+Masking)"
+
         logger.info(loss_info)
 
     # Create optimizer and scheduler
@@ -540,7 +539,7 @@ def main(cfg: DictConfig) -> None:
             "learning_rate": cfg.training.initial_lr,
             "optimizer": "Adam",
             "train_loss": cfg.loss.base_loss_type,
-            "loss_masking": cfg.loss.use_mask,
+            "loss_masking": use_mask,
             "loss_derivative": cfg.loss.use_derivative,
             "use_amp": cfg.training.use_amp,
             "use_graphs": cfg.training.use_graphs,
@@ -684,7 +683,7 @@ def main(cfg: DictConfig) -> None:
                     if cfg.training.use_amp:
                         with autocast():
                             pred = model(inputs)
-                            loss = loss_fn(pred, targets, inputs)
+                            loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
                         scaler.scale(loss).backward()
                         scaler.step(optimizer)
                         scaler.update()
@@ -789,18 +788,12 @@ def main(cfg: DictConfig) -> None:
                                 )
                             _, _, metric_fn = _METRIC_REGISTRY[val_metric_choice]
 
-                            # Determine masking strategy
-                            use_legacy_mask = cfg.data.get("use_reservoir_mask", False)
                             mask_np = static_mask.cpu().numpy() if static_mask is not None else None
 
                             for i in range(pred_denorm.shape[0]):
                                 if mask_np is not None:
                                     y_pred = pred_denorm[i][mask_np]
                                     y_true = targets_denorm[i][mask_np]
-                                elif use_legacy_mask:
-                                    mask = inputs_cpu[i, :, :, 0, 0] != 0
-                                    y_pred = pred_denorm[i][mask]
-                                    y_true = targets_denorm[i][mask]
                                 else:
                                     y_pred = pred_denorm[i].ravel()
                                     y_true = targets_denorm[i].ravel()

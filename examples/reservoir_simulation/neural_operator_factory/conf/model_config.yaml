@@ -139,7 +139,6 @@ arch:
 loss:
   base_loss_type: relative_l2   # 'mse', 'l1', 'relative_l2', 'relative_l1', 'huber'
   reduction: mean
-  use_mask: false
   use_derivative: false          # Enable derivative loss as requested
   derivative_weight: 0.5        # Weight for derivative term
   derivative_dim: dx            # Direction for derivative (dx, dy, dt)

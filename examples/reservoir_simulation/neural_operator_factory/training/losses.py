@@ -50,6 +50,7 @@ class SimpleRelativeL2Loss(nn.Module):
         predictions: torch.Tensor,
         targets: torch.Tensor,
         inputs: torch.Tensor = None,
+        spatial_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Compute simple relative L2 loss.
@@ -320,13 +321,16 @@ class UnifiedLoss(nn.Module):
 
         batch_size = pred.shape[0]
 
-        # --- Case 1: Masking enabled (vectorized implementation) ---
-        if self.use_mask:
-            # Create mask from inputs: non-zero locations at first channel and first timestep
-            # inputs shape: (B, H, W, T, C)
-            mask = (inputs[:, :, :, 0:1, 0] != 0).repeat(
-                1, 1, 1, pred.shape[3]
-            )  # (B, H, W, T)
+        # --- Case 1: Masking enabled ---
+        if self.use_mask or spatial_mask is not None:
+            if spatial_mask is not None:
+                # Use provided static mask: (*spatial) -> broadcast to (B, *spatial, T)
+                mask = spatial_mask.unsqueeze(0).unsqueeze(-1).expand_as(pred)
+            else:
+                # Legacy CO2 mask from input channel 0 (2D only)
+                mask = (inputs[:, :, :, 0:1, 0] != 0).repeat(
+                    1, 1, 1, pred.shape[3]
+                )  # (B, H, W, T)
 
             # Vectorized masked loss computation
             if self.base_loss_type == "relative_l2":
