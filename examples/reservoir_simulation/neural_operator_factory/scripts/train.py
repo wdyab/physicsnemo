@@ -142,6 +142,7 @@ from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, LaunchLogger
 
 from data.dataloader import create_dataloaders
+from data.scalar_utils import detect_scalar_channels, create_mionet_collate_fn, log_scalar_detection_results
 from training.losses import get_loss_function, UnifiedLoss
 from training.metrics import (
     mean_relative_error,
@@ -255,6 +256,43 @@ def main(cfg: DictConfig) -> None:
     static_mask = train_loader.dataset.get_static_mask()
     if static_mask is not None:
         static_mask = static_mask.to(dist.device)
+
+    # Detect MIONet scalar channels and recreate dataloaders with MIONet collate
+    model_type_check = cfg.arch.model.lower()
+    is_mionet = (model_type_check == "xdeeponet" and
+                 cfg.arch.xdeeponet.get("variant", "") in ["mionet", "fourier_mionet"])
+    scalar_info = None
+
+    if is_mionet:
+        sample_input, _ = train_loader.dataset[0]
+        scalar_info = detect_scalar_channels(sample_input)
+
+        if dist.rank == 0:
+            log_scalar_detection_results(scalar_info, logger=logger)
+
+        if scalar_info["num_scalar_channels"] > 0:
+            mionet_collate = create_mionet_collate_fn(
+                scalar_info["scalar_indices"], scalar_info["spatial_indices"]
+            )
+            train_loader, val_loader, test_loader = create_dataloaders(
+                data_path=cfg.data.data_path,
+                batch_size=cfg.training.batch_size,
+                normalize=cfg.data.normalize,
+                num_workers=num_workers,
+                device=dist.device,
+                input_file=cfg.data.get("input_file", None),
+                output_file=cfg.data.get("output_file", None),
+                variable=cfg.data.get("variable", None),
+                expected_dimensions=expected_dimensions,
+                use_mask=use_mask,
+                custom_collate_fn=mionet_collate,
+            )
+            if dist.rank == 0:
+                logger.info("Recreated dataloaders with MIONet collate function")
+        else:
+            if dist.rank == 0:
+                logger.warning("No scalar channels detected — MIONet branch2 will receive empty input")
+            is_mionet = False
 
     # Print data info (only on rank 0)
     if dist.rank == 0:
@@ -423,13 +461,16 @@ def main(cfg: DictConfig) -> None:
         raise ValueError(f"Unknown model: {model_type}. Use 'xfno' or 'xdeeponet'.")
 
     # Initialize lazy modules with a dummy forward pass (required for DDP)
-    # This is needed because nn.LazyLinear doesn't know its input size until first forward
     if dist.rank == 0:
         logger.info("Initializing model with dummy forward pass...")
     with torch.no_grad():
         dummy_batch = next(iter(train_loader))
         dummy_input = dummy_batch[0].to(dist.device)
-        _ = model(dummy_input)
+        if is_mionet and len(dummy_batch) == 3:
+            dummy_scalar = dummy_batch[1].to(dist.device)
+            _ = model(dummy_input, x_branch2=dummy_scalar)
+        else:
+            _ = model(dummy_input)
     if dist.rank == 0:
         logger.info("Model initialization complete.")
 
@@ -658,9 +699,17 @@ def main(cfg: DictConfig) -> None:
             model.train()
             total_loss = 0.0
 
-            for batch_idx, (inputs, targets) in enumerate(train_loader):
-                inputs = inputs.to(dist.device)
-                targets = targets.to(dist.device)
+            for batch_idx, batch in enumerate(train_loader):
+                if is_mionet and len(batch) == 3:
+                    inputs, scalar_inputs, targets = batch
+                    inputs = inputs.to(dist.device)
+                    scalar_inputs = scalar_inputs.to(dist.device)
+                    targets = targets.to(dist.device)
+                else:
+                    inputs, targets = batch
+                    inputs = inputs.to(dist.device)
+                    targets = targets.to(dist.device)
+                    scalar_inputs = None
                 optimizer.zero_grad()
 
                 if regime == "autoregressive":
@@ -672,17 +721,19 @@ def main(cfg: DictConfig) -> None:
                             L=ar_L, K=ar_K,
                             max_steps=ar_max_steps,
                             use_checkpointing=ar_checkpointing,
+                            x_branch2=scalar_inputs,
                         )
                     else:
                         loss = teacher_forcing_step(
                             model, inputs, targets, loss_fn,
                             L=ar_L, K=ar_K,
+                            x_branch2=scalar_inputs,
                         )
                 else:
                     # Full-mapping: single forward pass over entire trajectory
                     if cfg.training.use_amp:
                         with autocast():
-                            pred = model(inputs)
+                            pred = model(inputs, x_branch2=scalar_inputs) if is_mionet else model(inputs)
                             loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
                         scaler.scale(loss).backward()
                         scaler.step(optimizer)
@@ -698,8 +749,8 @@ def main(cfg: DictConfig) -> None:
                             total_loss += loss.detach()
                         continue
                     else:
-                        pred = model(inputs)
-                        loss = loss_fn(pred, targets, inputs)
+                        pred = model(inputs, x_branch2=scalar_inputs) if is_mionet else model(inputs)
+                        loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
 
                 # Common backward pass (AR mode, or full-mapping without AMP)
                 loss.backward()
@@ -737,20 +788,26 @@ def main(cfg: DictConfig) -> None:
                 mre_list = []
 
                 with torch.no_grad():
-                    for inputs, targets in val_loader:
-                        inputs = inputs.to(dist.device)
-                        targets = targets.to(dist.device)
+                    for val_batch in val_loader:
+                        if is_mionet and len(val_batch) == 3:
+                            inputs, scalar_inputs, targets = val_batch
+                            inputs = inputs.to(dist.device)
+                            scalar_inputs = scalar_inputs.to(dist.device)
+                            targets = targets.to(dist.device)
+                        else:
+                            inputs, targets = val_batch
+                            inputs = inputs.to(dist.device)
+                            targets = targets.to(dist.device)
+                            scalar_inputs = None
 
                         # Forward pass with optional AMP
                         if cfg.training.use_amp:
                             with autocast():
-                                pred = model(inputs)
-                                # Use Relative L2 loss for validation
-                                val_loss = val_loss_fn(pred, targets, inputs)
+                                pred = model(inputs, x_branch2=scalar_inputs) if is_mionet else model(inputs)
+                                val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
                         else:
-                            pred = model(inputs)
-                            # Use Relative L2 loss for validation
-                            val_loss = val_loss_fn(pred, targets, inputs)
+                            pred = model(inputs, x_branch2=scalar_inputs) if is_mionet else model(inputs)
+                            val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
 
                         # Aggregate validation loss across GPUs
                         if dist.world_size > 1:

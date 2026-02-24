@@ -61,13 +61,13 @@ def detect_scalar_channels(
         >>> print(f"Spatial channels: {result['spatial_indices']}")
     """
     # Handle batch dimension if present
-    if sample_input.dim() == 5:
-        # (B, H, W, T, C) -> use first sample
+    if sample_input.dim() in (5, 6):
+        # (B, H, W, T, C) or (B, X, Y, Z, T, C) -> use first sample
         sample_input = sample_input[0]
     
-    if sample_input.dim() != 4:
+    if sample_input.dim() not in (4, 5):
         raise ValueError(
-            f"Expected input shape (H, W, T, C) or (B, H, W, T, C), "
+            f"Expected input shape (*spatial, T, C) with 2 or 3 spatial dims, "
             f"got shape {sample_input.shape}"
         )
     
@@ -186,20 +186,26 @@ def create_mionet_collate_fn(
         
         Returns:
             Tuple of (spatial_inputs, scalar_inputs, targets)
-            - spatial_inputs: (B, H, W, T, C_spatial) - channels that vary spatially
+            - spatial_inputs: (B, *spatial, T, C_spatial)
             - scalar_inputs: (B, C_scalar) - scalar values for each sample
-            - targets: (B, H, W, T) - target outputs
+            - targets: (B, *spatial, T)
+        
+        Works for both 3D (H,W,T,C) and 4D (X,Y,Z,T,C) inputs.
         """
         inputs, targets = zip(*batch)
-        inputs = torch.stack(inputs)    # (B, H, W, T, C)
-        targets = torch.stack(targets)  # (B, H, W, T)
+        inputs = torch.stack(inputs)    # (B, *spatial, T, C)
+        targets = torch.stack(targets)  # (B, *spatial, T)
         
         # Separate spatial and scalar channels
-        spatial_inputs = inputs[..., spatial_idx]  # (B, H, W, T, C_spatial)
+        spatial_inputs = inputs[..., spatial_idx]  # (B, *spatial, T, C_spatial)
         
-        # For scalar channels, extract the constant value (take from position [0,0,0])
-        # since it's the same everywhere in the spatial/temporal domain
-        scalar_inputs = inputs[:, 0, 0, 0, scalar_idx]  # (B, C_scalar)
+        # For scalar channels, extract the constant value from a fixed location.
+        # Build index: first spatial position, first timestep.
+        # Works for any number of spatial dims.
+        ndim = inputs.dim()
+        # Index: [:, 0, 0, ..., 0, scalar_idx] — batch + zeros for all spatial+time dims
+        zero_idx = (slice(None),) + (0,) * (ndim - 2)  # (B, 0, 0, ..., 0)
+        scalar_inputs = inputs[zero_idx][..., scalar_idx]  # (B, C_scalar)
         
         return spatial_inputs, scalar_inputs, targets
     

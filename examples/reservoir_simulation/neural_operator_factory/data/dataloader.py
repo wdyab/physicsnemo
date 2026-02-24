@@ -427,6 +427,7 @@ def create_dataloaders(
     variable: Optional[str] = None,
     expected_dimensions: Optional[str] = None,
     use_mask: bool = False,
+    custom_collate_fn=None,
 ) -> Tuple[torch.utils.data.DataLoader, ...]:
     """
     Create train, validation, and test dataloaders.
@@ -542,7 +543,7 @@ def create_dataloaders(
         "num_workers": num_workers,
         "pin_memory": use_pin_memory,
         "persistent_workers": num_workers > 0,
-        "collate_fn": collate_fn,
+        "collate_fn": custom_collate_fn if custom_collate_fn is not None else collate_fn,
     }
     
     train_loader = DataLoader(

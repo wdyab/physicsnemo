@@ -158,27 +158,29 @@ def _call_model(
     x_window: Tensor,
     target_times: Optional[Tensor],
     use_checkpointing: bool = False,
+    x_branch2: Optional[Tensor] = None,
 ) -> Tensor:
-    """Call the model, optionally passing target_times (for DeepONet) and
-    optionally using gradient checkpointing."""
+    """Call the model, optionally passing target_times and x_branch2."""
     has_target_times = target_times is not None and _model_accepts_target_times(model)
 
-    if use_checkpointing and model.training:
-        if has_target_times:
-            return grad_checkpoint(
-                _forward_with_times, model, x_window, target_times,
-                use_reentrant=False,
-            )
-        return grad_checkpoint(model, x_window, use_reentrant=False)
-
+    kwargs = {}
     if has_target_times:
-        return model(x_window, target_times=target_times)
-    return model(x_window)
+        kwargs["target_times"] = target_times
+    if x_branch2 is not None:
+        kwargs["x_branch2"] = x_branch2
+
+    if use_checkpointing and model.training:
+        return grad_checkpoint(
+            _forward_with_kwargs, model, x_window, kwargs,
+            use_reentrant=False,
+        )
+
+    return model(x_window, **kwargs)
 
 
-def _forward_with_times(model, x_window, target_times):
-    """Thin wrapper so ``grad_checkpoint`` can pass target_times."""
-    return model(x_window, target_times=target_times)
+def _forward_with_kwargs(model, x_window, kwargs):
+    """Thin wrapper so ``grad_checkpoint`` can pass kwargs dict."""
+    return model(x_window, **kwargs)
 
 
 def _model_accepts_target_times(model) -> bool:
@@ -201,6 +203,7 @@ def teacher_forcing_step(
     loss_fn,
     L: int,
     K: int,
+    x_branch2: Optional[Tensor] = None,
 ) -> Tensor:
     """One teacher-forcing training iteration over a batch.
 
@@ -219,7 +222,7 @@ def teacher_forcing_step(
     y_target = slice_target_window(targets, t0 + L, K)
     target_times = extract_target_times(inputs, t0 + L, K)
 
-    pred = _call_model(model, x_window, target_times)
+    pred = _call_model(model, x_window, target_times, x_branch2=x_branch2)
     t_ax = _time_axis_target(pred)
 
     if pred.shape[t_ax] > K:
@@ -244,6 +247,7 @@ def rollout_step(
     K: int,
     max_steps: int,
     use_checkpointing: bool = True,
+    x_branch2: Optional[Tensor] = None,
 ) -> Tensor:
     """One rollout (free-running) training iteration.
 
@@ -273,7 +277,7 @@ def rollout_step(
         x_window = slice_input_window(inputs, current_t, L)
         target_times = extract_target_times(inputs, target_start, actual_K)
 
-        pred = _call_model(model, x_window, target_times, use_checkpointing)
+        pred = _call_model(model, x_window, target_times, use_checkpointing, x_branch2=x_branch2)
 
         t_ax = _time_axis_target(pred)
         if pred.shape[t_ax] > actual_K:
@@ -308,6 +312,7 @@ def ar_validate_full_rollout(
     targets: Tensor,
     L: int,
     K: int,
+    x_branch2: Optional[Tensor] = None,
 ) -> Tensor:
     """Run a complete AR rollout over the full trajectory for validation.
 
@@ -330,7 +335,7 @@ def ar_validate_full_rollout(
         x_window = slice_input_window(inputs, current_t, L)
         target_times = extract_target_times(inputs, target_start, actual_K)
 
-        pred = _call_model(model, x_window, target_times)
+        pred = _call_model(model, x_window, target_times, x_branch2=x_branch2)
 
         pred_t_ax = _time_axis_target(pred)
         if pred.shape[pred_t_ax] > actual_K:
