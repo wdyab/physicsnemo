@@ -296,6 +296,7 @@ class UnifiedLoss(nn.Module):
         pred: torch.Tensor,
         target: torch.Tensor,
         inputs: torch.Tensor = None,
+        spatial_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """Compute unified loss.
 
