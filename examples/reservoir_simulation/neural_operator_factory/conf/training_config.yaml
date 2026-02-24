@@ -23,12 +23,12 @@ data:
   # File naming (supports {mode} placeholder for train/val/test)
   # Option 1: CO2 convention - set variable, leave input_file/output_file null
   # Option 2: Custom files - set input_file and output_file patterns
-  variable: saturation           # 'pressure' or 'saturation' (CO2 dataset)
+  variable: pressure           # 'pressure' or 'saturation' 
   input_file: norne_{mode}_input.pt               # e.g., 'norne_{mode}_input.pt' for custom datasets
-  output_file: norne_{mode}_swat.pt              # e.g., 'norne_{mode}_output.pt' for custom datasets
+  output_file: norne_{mode}_pressure.pt              # e.g., 'norne_{mode}_output.pt' for custom datasets
   
-  normalize: false
-  num_workers: 1
+  normalize: true
+  num_workers: 2
 
   # ---------------------------------------------------------------------------
   # Validation Metric Configuration (dataset-agnostic)
@@ -39,19 +39,29 @@ data:
   #   CO2 examples: 'mre' for pressure, 'mpe' for saturation.
   val_metric: rmse
 
-  # use_reservoir_mask: Apply a permeability-based reservoir mask before
-  #   computing the validation metric. Only meaningful for the CO2 dataset
-  #   where channel 0 of the input is a permeability field.
-  #   Default: false (no masking — works for any dataset).
-  use_reservoir_mask: false
+  # ---------------------------------------------------------------------------
+  # Spatial Masking (inactive cell exclusion)
+  # ---------------------------------------------------------------------------
+  # Masks inactive cells by auto-detecting the ACTNUM channel (binary, static,
+  # identical across samples). Applied to validation metrics during training
+  # and to all metrics during evaluation.
+  mask:
+    enabled: true
 
-  # denormalize_fn: Name of a denormalization function to apply to
-  #   predictions and targets before computing validation metrics.
-  #   Choices: 'dnorm_dP' (CO2 pressure), null (no denormalization).
-  #   Default: null (no denormalization — works for any dataset).
+  # Legacy CO2-specific settings (use mask section above for new datasets)
+  use_reservoir_mask: false
   denormalize_fn: null
 
 training:
+
+  # ---------------------------------------------------------------------------
+  # Training Regime
+  # ---------------------------------------------------------------------------
+  # full_mapping:    Predict entire trajectory in one forward pass (default).
+  # autoregressive:  Predict K timesteps from L context timesteps,
+  #                  with two-phase training (teacher forcing then rollout).
+  regime: autoregressive
+
   batch_size: 2
   epochs: 200                   # used by full_mapping only; ignored by autoregressive
   initial_lr: 0.001
@@ -63,19 +73,12 @@ training:
   use_amp: false
   use_graphs: true
 
-  # ---------------------------------------------------------------------------
-  # Training Regime
-  # ---------------------------------------------------------------------------
-  # full_mapping:    Predict entire trajectory in one forward pass (default).
-  # autoregressive:  Predict K timesteps from L context timesteps,
-  #                  with two-phase training (teacher forcing then rollout).
-  regime: autoregressive
 
   autoregressive:
     input_window: 1            # L: number of context timesteps fed to model
     output_window: 3           # K: timesteps predicted per step (DeepONet: any K; xFNO: L+K >= 2*time_modes)
-    teacher_forcing_epochs: 500 # Phase 1: model sees ground-truth inputs (learns physics)
-    rollout_epochs: 200         # Phase 2: model sees its own predictions (learns self-correction)
+    teacher_forcing_epochs: 160 # Phase 1: model sees ground-truth inputs (learns physics)
+    rollout_epochs: 40         # Phase 2: model sees its own predictions (learns self-correction)
     max_rollout_steps: 4       # Max chained AR steps per iteration (rollout phase)
     gradient_checkpointing: true
 

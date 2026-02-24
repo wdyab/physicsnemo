@@ -92,15 +92,15 @@ arch:
   #   - mionet: Two-branch architecture
   #   - fourier_mionet: Two-branch with Fourier layers
   xdeeponet:
-    variant: u_deeponet
+    variant: fourier_mionet
     width: 128
     padding: 8
     
     # Branch 1: Primary spatial encoder
     branch1:
       type: spatial           # 'spatial' or 'mlp'
-      num_fourier_layers: 0   # 0 = pure UNet/Conv mode
-      num_unet_layers: 3      # 3 U-Net layers as requested
+      num_fourier_layers: 3   # 0 = pure UNet/Conv mode
+      num_unet_layers: 0      # 3 U-Net layers as requested
       num_conv_layers: 0
       modes1: 8               # H or X dimension - Only for Fourier layers
       modes2: 8               # W or Y dimension - Only for Fourier layers

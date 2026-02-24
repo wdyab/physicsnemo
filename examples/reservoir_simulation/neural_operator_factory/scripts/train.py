@@ -234,19 +234,27 @@ def main(cfg: DictConfig) -> None:
     # Get dimensions from config (used for model selection and data validation)
     expected_dimensions = cfg.arch.dimensions.lower()
     
+    # Resolve mask setting from config
+    mask_cfg = cfg.data.get("mask", {})
+    use_mask = mask_cfg.get("enabled", False)
+
     train_loader, val_loader, test_loader = create_dataloaders(
         data_path=cfg.data.data_path,
         batch_size=cfg.training.batch_size,
         normalize=cfg.data.normalize,
         num_workers=num_workers,
         device=dist.device,
-        # Flexible file specification from config
         input_file=cfg.data.get("input_file", None),
         output_file=cfg.data.get("output_file", None),
         variable=cfg.data.get("variable", None),
-        # Validate data dimensions match config
         expected_dimensions=expected_dimensions,
+        use_mask=use_mask,
     )
+
+    # Get static mask for validation metrics (move to device)
+    static_mask = train_loader.dataset.get_static_mask()
+    if static_mask is not None:
+        static_mask = static_mask.to(dist.device)
 
     # Print data info (only on rank 0)
     if dist.rank == 0:
@@ -781,10 +789,15 @@ def main(cfg: DictConfig) -> None:
                                 )
                             _, _, metric_fn = _METRIC_REGISTRY[val_metric_choice]
 
-                            use_mask = cfg.data.get("use_reservoir_mask", False)
+                            # Determine masking strategy
+                            use_legacy_mask = cfg.data.get("use_reservoir_mask", False)
+                            mask_np = static_mask.cpu().numpy() if static_mask is not None else None
 
                             for i in range(pred_denorm.shape[0]):
-                                if use_mask:
+                                if mask_np is not None:
+                                    y_pred = pred_denorm[i][mask_np]
+                                    y_true = targets_denorm[i][mask_np]
+                                elif use_legacy_mask:
                                     mask = inputs_cpu[i, :, :, 0, 0] != 0
                                     y_pred = pred_denorm[i][mask]
                                     y_true = targets_denorm[i][mask]

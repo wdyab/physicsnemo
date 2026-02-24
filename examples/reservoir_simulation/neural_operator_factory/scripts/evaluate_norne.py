@@ -97,13 +97,30 @@ def load_model(model_config, device):
     return model.to(device)
 
 
-def print_metrics(all_predictions, all_targets, variable, num_timesteps):
+def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial_mask=None):
     """Compute and print all metrics in XMGN-compatible format."""
-    overall_mae = np.mean(np.abs(all_predictions - all_targets))
-    overall_mse = np.mean((all_predictions - all_targets) ** 2)
+    if spatial_mask is not None:
+        # Broadcast mask to match full shape: (*spatial) -> (N, *spatial, T)
+        # Expand mask dims to match: add batch dim at front and time dim at end
+        m = spatial_mask
+        ndim_diff = all_predictions.ndim - m.ndim
+        for _ in range(ndim_diff):
+            if len(m.shape) < all_predictions.ndim - 1:
+                m = m[np.newaxis, ...]  # add batch
+            else:
+                m = m[..., np.newaxis]  # add time
+        m = np.broadcast_to(m, all_predictions.shape)
+        pred_flat = all_predictions[m]
+        gt_flat = all_targets[m]
+    else:
+        pred_flat = all_predictions.ravel()
+        gt_flat = all_targets.ravel()
+
+    overall_mae = np.mean(np.abs(pred_flat - gt_flat))
+    overall_mse = np.mean((pred_flat - gt_flat) ** 2)
     overall_rmse = np.sqrt(overall_mse)
-    overall_rel_l2 = compute_relative_l2_error(all_predictions, all_targets)
-    overall_r2 = compute_r2_score(all_predictions.ravel(), all_targets.ravel())
+    overall_rel_l2 = compute_relative_l2_error(pred_flat, gt_flat)
+    overall_r2 = compute_r2_score(pred_flat, gt_flat)
 
     print("=" * 70)
     print("EVALUATION RESULTS")
@@ -127,6 +144,12 @@ def print_metrics(all_predictions, all_targets, variable, num_timesteps):
     for t in range(num_timesteps):
         pred_t = all_predictions[..., t]
         gt_t = all_targets[..., t]
+        if spatial_mask is not None:
+            pred_t = pred_t[np.broadcast_to(spatial_mask[np.newaxis], pred_t.shape)]
+            gt_t = gt_t[np.broadcast_to(spatial_mask[np.newaxis], gt_t.shape)]
+        else:
+            pred_t = pred_t.ravel()
+            gt_t = gt_t.ravel()
         t_mae = np.mean(np.abs(pred_t - gt_t))
         t_mse = np.mean((pred_t - gt_t) ** 2)
         t_rmse = np.sqrt(t_mse)
@@ -139,10 +162,17 @@ def print_metrics(all_predictions, all_targets, variable, num_timesteps):
     n = all_predictions.shape[0]
     show_idx = list(range(min(10, n))) + list(range(max(10, n - 5), n))
     for i in show_idx:
-        s_mae = np.mean(np.abs(all_predictions[i] - all_targets[i]))
-        s_rmse = np.sqrt(np.mean((all_predictions[i] - all_targets[i]) ** 2))
-        s_rel_l2 = compute_relative_l2_error(all_predictions[i], all_targets[i])
-        s_r2 = compute_r2_score(all_predictions[i].ravel(), all_targets[i].ravel())
+        if spatial_mask is not None:
+            m_t = np.broadcast_to(spatial_mask[..., np.newaxis], all_predictions[i].shape)
+            pi = all_predictions[i][m_t]
+            gi = all_targets[i][m_t]
+        else:
+            pi = all_predictions[i].ravel()
+            gi = all_targets[i].ravel()
+        s_mae = np.mean(np.abs(pi - gi))
+        s_rmse = np.sqrt(np.mean((pi - gi) ** 2))
+        s_rel_l2 = compute_relative_l2_error(pi, gi)
+        s_r2 = compute_r2_score(pi, gi)
         print(f"{i:6d} | {s_mae:12.6e} | {s_rmse:12.6e} | {s_rel_l2:12.6e} | {s_r2:8.4f}")
 
     print()
@@ -169,6 +199,10 @@ def main():
     )
     parser.add_argument("--L", type=int, default=1, help="AR input window (context timesteps)")
     parser.add_argument("--K", type=int, default=3, help="AR output window (predicted timesteps per step)")
+    parser.add_argument(
+        "--mask", action="store_true",
+        help="Auto-detect ACTNUM channel and compute metrics only on active cells.",
+    )
     parser.add_argument(
         "--normalize", action="store_true",
         help="Load data normalized (for models trained with normalize=true). "
@@ -246,6 +280,26 @@ def main():
         del tmp_train
     sample_x, sample_y = test_dataset[0]
     num_timesteps = sample_y.shape[-1]
+
+    # Static spatial mask (auto-detect ACTNUM)
+    spatial_mask = None
+    if args.mask:
+        from data.dataloader import ReservoirDataset as _DS
+        # Create a temporary dataset just to trigger auto-detection
+        _tmp = _DS(
+            data_path=args.data_path, mode="test",
+            input_file=input_pattern, output_file=output_pattern,
+            normalize=False, use_mask=True,
+        )
+        if _tmp.static_mask is not None:
+            spatial_mask = _tmp.static_mask.numpy()
+            n_act = spatial_mask.sum()
+            n_tot = spatial_mask.size
+            print(f"Mask:          {n_act}/{n_tot} active ({100*n_act/n_tot:.1f}%)")
+        else:
+            print("Mask:          no ACTNUM detected, masking disabled")
+        del _tmp
+
     print(f"Test samples:  {len(test_dataset)}")
     print(f"Input shape:   {tuple(sample_x.shape)}")
     print(f"Output shape:  {tuple(sample_y.shape)}")
@@ -312,7 +366,7 @@ def main():
         print()
 
     # -- Metrics --
-    print_metrics(all_predictions, all_targets, args.variable, num_timesteps)
+    print_metrics(all_predictions, all_targets, args.variable, num_timesteps, spatial_mask)
     print("Evaluation complete.")
     print("=" * 70)
 
