@@ -416,6 +416,14 @@ def main(cfg: DictConfig) -> None:
         # Build branch configs from yaml
         branch1_config = dict(xdeeponet_cfg.branch1)
         branch2_config = dict(xdeeponet_cfg.branch2) if variant in ['mionet', 'fourier_mionet'] else None
+        # Disable branch2 if MIONet variant but no scalar channels detected
+        if branch2_config is not None and not is_mionet:
+            if dist.rank == 0:
+                logger.warning(
+                    "No scalar channels found — disabling branch2. "
+                    "Model will run as single-branch (branch1 only)."
+                )
+            branch2_config = None
         trunk_config = dict(xdeeponet_cfg.trunk)
         
         if dimensions == "4d":
