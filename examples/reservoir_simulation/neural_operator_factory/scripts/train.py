@@ -264,7 +264,7 @@ def main(cfg: DictConfig) -> None:
     scalar_info = None
 
     if is_mionet:
-        sample_input, _ = train_loader.dataset[0]
+        sample_input = train_loader.dataset.input_data[0]  # raw data, not normalized
         scalar_info = detect_scalar_channels(sample_input)
 
         if dist.rank == 0:

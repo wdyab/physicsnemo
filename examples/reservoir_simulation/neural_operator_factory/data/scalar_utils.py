@@ -60,14 +60,17 @@ def detect_scalar_channels(
         >>> print(f"Scalar channels: {result['scalar_indices']}")
         >>> print(f"Spatial channels: {result['spatial_indices']}")
     """
-    # Handle batch dimension if present
-    if sample_input.dim() in (5, 6):
-        # (B, H, W, T, C) or (B, X, Y, Z, T, C) -> use first sample
+    # Handle batch dimension if present.
+    # 3D data: single sample = (H, W, T, C) dim=4,  batch = (B, H, W, T, C) dim=5
+    # 4D data: single sample = (X, Y, Z, T, C) dim=5, batch = (B, X, Y, Z, T, C) dim=6
+    # Only strip first dim for batched inputs (dim=6 is always batched 4D;
+    # dim=5 could be batched 3D or single 4D — caller must pass single samples).
+    if sample_input.dim() == 6:
         sample_input = sample_input[0]
     
     if sample_input.dim() not in (4, 5):
         raise ValueError(
-            f"Expected input shape (*spatial, T, C) with 2 or 3 spatial dims, "
+            f"Expected single sample (*spatial, T, C) with 2-3 spatial dims, "
             f"got shape {sample_input.shape}"
         )
     
