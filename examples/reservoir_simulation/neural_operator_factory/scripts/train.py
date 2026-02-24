@@ -522,7 +522,7 @@ def main(cfg: DictConfig) -> None:
         val_loss_cfg = DictConfig(
             {
                 "base_loss_type": cfg.loss.base_loss_type,
-                "use_mask": cfg.loss.use_mask,  # Use same mask as training
+                "use_mask": False,  # Masking handled via spatial_mask param
                 "use_derivative": False,  # No derivatives in validation
                 "reduction": cfg.loss.get("reduction", "sum"),
             }
