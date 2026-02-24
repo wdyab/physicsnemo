@@ -48,19 +48,26 @@ from training.metrics import (
 from training.ar_utils import ar_validate_full_rollout
 
 
-def load_model(model_config, device):
+def load_model(model_config, device, checkpoint_state_dict=None):
     """Reconstruct model from saved config."""
     model_type = model_config["model_type"]
     dimensions = model_config.get("dimensions", "4d")
 
     if model_type == "xdeeponet":
+        # Check if branch2 weights exist in checkpoint; if not, disable branch2
+        branch2_config = model_config.get("branch2_config")
+        if branch2_config is not None and checkpoint_state_dict is not None:
+            has_branch2_weights = any(k.startswith("model.branch2") for k in checkpoint_state_dict)
+            if not has_branch2_weights:
+                branch2_config = None
+
         cls = DeepONet3DWrapper if dimensions == "4d" else DeepONetWrapper
         model = cls(
             padding=model_config.get("padding", 8),
             variant=model_config.get("variant", "u_deeponet"),
             width=model_config.get("width", 128),
             branch1_config=model_config.get("branch1_config", {}),
-            branch2_config=model_config.get("branch2_config"),
+            branch2_config=branch2_config,
             trunk_config=model_config.get("trunk_config", {}),
             decoder_type=model_config.get("decoder_type", "mlp"),
             decoder_width=model_config.get("decoder_width", 128),
@@ -307,7 +314,7 @@ def main():
     print()
 
     # -- Model --
-    model = load_model(model_config, device)
+    model = load_model(model_config, device, checkpoint["model_state_dict"])
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     num_params = sum(p.numel() for p in model.parameters())
