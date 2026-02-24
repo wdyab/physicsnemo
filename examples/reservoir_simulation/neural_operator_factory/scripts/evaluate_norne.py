@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Evaluate a trained model on the Norne field test dataset.
+
+Supports two evaluation modes:
+  full_mapping:   Feed all timesteps at once (single forward pass).
+  autoregressive: Roll out step-by-step (L context -> K predicted),
+                  matching the XMGN autoregressive inference protocol.
+
+Usage:
+    python scripts/evaluate_norne.py --mode full_mapping
+    python scripts/evaluate_norne.py --mode autoregressive --L 1 --K 3
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import argparse
+import torch
+import numpy as np
+
+from models.deeponet import DeepONet3DWrapper, DeepONetWrapper
+from models.xfno import UFNONet, FNO4DNet
+from data.dataloader import ReservoirDataset
+from training.metrics import (
+    mean_absolute_error,
+    compute_r2_score,
+    compute_relative_l2_error,
+)
+from training.ar_utils import ar_validate_full_rollout
+
+
+def load_model(model_config, device):
+    """Reconstruct model from saved config."""
+    model_type = model_config["model_type"]
+    dimensions = model_config.get("dimensions", "4d")
+
+    if model_type == "xdeeponet":
+        cls = DeepONet3DWrapper if dimensions == "4d" else DeepONetWrapper
+        model = cls(
+            padding=model_config.get("padding", 8),
+            variant=model_config.get("variant", "u_deeponet"),
+            width=model_config.get("width", 128),
+            branch1_config=model_config.get("branch1_config", {}),
+            branch2_config=model_config.get("branch2_config"),
+            trunk_config=model_config.get("trunk_config", {}),
+            decoder_type=model_config.get("decoder_type", "mlp"),
+            decoder_width=model_config.get("decoder_width", 128),
+            decoder_layers=model_config.get("decoder_layers", 2),
+            decoder_activation_fn=model_config.get("decoder_activation_fn", "relu"),
+        )
+    elif model_type == "xfno":
+        if dimensions == "4d":
+            model = FNO4DNet(
+                modes1=model_config["modes1"],
+                modes2=model_config["modes2"],
+                modes3=model_config["modes3"],
+                modes4=model_config["modes4"],
+                width=model_config["width"],
+                in_channels=model_config["in_channels"],
+                out_channels=model_config.get("out_channels", 1),
+                num_fno_layers=model_config["num_fno_layers"],
+                padding=model_config.get("padding", 8),
+            )
+        else:
+            model = UFNONet(
+                modes1=model_config["modes1"],
+                modes2=model_config["modes2"],
+                modes3=model_config["modes3"],
+                width=model_config["width"],
+                in_channels=model_config["in_channels"],
+                out_channels=model_config.get("out_channels", 1),
+                num_fno_layers=model_config["num_fno_layers"],
+                padding=model_config.get("padding", 8),
+            )
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
+    return model.to(device)
+
+
+def print_metrics(all_predictions, all_targets, variable, num_timesteps):
+    """Compute and print all metrics in XMGN-compatible format."""
+    overall_mae = np.mean(np.abs(all_predictions - all_targets))
+    overall_mse = np.mean((all_predictions - all_targets) ** 2)
+    overall_rmse = np.sqrt(overall_mse)
+    overall_rel_l2 = compute_relative_l2_error(all_predictions, all_targets)
+    overall_r2 = compute_r2_score(all_predictions.ravel(), all_targets.ravel())
+
+    print("=" * 70)
+    print("EVALUATION RESULTS")
+    print("=" * 70)
+    print(f"Test samples processed: {all_predictions.shape[0]}")
+    print(f"Overall MAE:           {overall_mae:.6e}")
+    print(f"Overall MSE:           {overall_mse:.6e}")
+    print(f"Overall RMSE:          {overall_rmse:.6e}")
+    print(f"Relative L2 Error:     {overall_rel_l2:.6e}")
+    print(f"R2 Score:              {overall_r2:.6f}")
+    print()
+
+    print("Per-Variable Metrics:")
+    print("-" * 70)
+    print(f"  {variable:>12s}  |  MAE: {overall_mae:>12.6e}  |  RMSE: {overall_rmse:>12.6e}")
+    print()
+
+    print("Per-Timestep Metrics (averaged over all samples):")
+    print(f"{'t':>4s} | {'MAE':>12s} | {'MSE':>12s} | {'RMSE':>12s}")
+    print("-" * 50)
+    for t in range(num_timesteps):
+        pred_t = all_predictions[..., t]
+        gt_t = all_targets[..., t]
+        t_mae = np.mean(np.abs(pred_t - gt_t))
+        t_mse = np.mean((pred_t - gt_t) ** 2)
+        t_rmse = np.sqrt(t_mse)
+        print(f"{t:4d} | {t_mae:12.6e} | {t_mse:12.6e} | {t_rmse:12.6e}")
+
+    print()
+    print("Per-Sample Summary (first 10 and last 5):")
+    print(f"{'sample':>6s} | {'MAE':>12s} | {'RMSE':>12s} | {'RelL2':>12s} | {'R2':>8s}")
+    print("-" * 60)
+    n = all_predictions.shape[0]
+    show_idx = list(range(min(10, n))) + list(range(max(10, n - 5), n))
+    for i in show_idx:
+        s_mae = np.mean(np.abs(all_predictions[i] - all_targets[i]))
+        s_rmse = np.sqrt(np.mean((all_predictions[i] - all_targets[i]) ** 2))
+        s_rel_l2 = compute_relative_l2_error(all_predictions[i], all_targets[i])
+        s_r2 = compute_r2_score(all_predictions[i].ravel(), all_targets[i].ravel())
+        print(f"{i:6d} | {s_mae:12.6e} | {s_rmse:12.6e} | {s_rel_l2:12.6e} | {s_r2:8.4f}")
+
+    print()
+    print("=" * 70)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Evaluate model on Norne test set (XMGN-compatible metrics)"
+    )
+    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument(
+        "--data_path", type=str,
+        default="/lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne",
+    )
+    parser.add_argument("--input_file", type=str, default="norne_test_input.pt")
+    parser.add_argument("--output_file", type=str, default="norne_test_swat.pt")
+    parser.add_argument("--variable", type=str, default="SWAT")
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument(
+        "--mode", type=str, default="full_mapping",
+        choices=["full_mapping", "autoregressive"],
+        help="full_mapping: single forward pass. autoregressive: AR rollout.",
+    )
+    parser.add_argument("--L", type=int, default=1, help="AR input window (context timesteps)")
+    parser.add_argument("--K", type=int, default=3, help="AR output window (predicted timesteps per step)")
+    parser.add_argument(
+        "--normalize", action="store_true",
+        help="Load data normalized (for models trained with normalize=true). "
+             "Metrics are reported on denormalized (physical) values.",
+    )
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # -- Checkpoint --
+    if args.checkpoint:
+        ckpt_path = Path(args.checkpoint)
+    else:
+        ckpt_dir = Path("checkpoints")
+        candidates = sorted(
+            ckpt_dir.glob("best_model_*.pth"), key=lambda p: p.stat().st_mtime
+        )
+        if not candidates:
+            raise FileNotFoundError("No checkpoints found. Specify --checkpoint.")
+        ckpt_path = candidates[-1]
+
+    checkpoint = torch.load(ckpt_path, map_location=device)
+    model_config = checkpoint["model_config"]
+
+    print("=" * 70)
+    print("NEURAL OPERATOR FACTORY - NORNE EVALUATION")
+    print("=" * 70)
+    print(f"Checkpoint:  {ckpt_path}")
+    print(f"Model:       {model_config['model_arch_name']}")
+    print(f"Epoch:       {checkpoint['epoch']}")
+    print(f"Val loss:    {checkpoint['val_loss']:.6e}")
+    print(f"Variable:    {args.variable}")
+    print(f"Mode:        {args.mode}")
+    if args.mode == "autoregressive":
+        print(f"  L={args.L}, K={args.K}")
+        total_steps = (65 - args.L) // args.K
+        print(f"  AR steps to cover trajectory: ~{total_steps}")
+    print()
+
+    # -- Data --
+    # When normalize=True, we need train stats to denormalize predictions
+    # Resolve {mode} patterns for file names
+    input_pattern = args.input_file
+    output_pattern = args.output_file
+
+    output_mean, output_std = 0.0, 1.0
+    if args.normalize:
+        train_dataset = ReservoirDataset(
+            data_path=args.data_path, mode="train",
+            input_file=input_pattern,
+            output_file=output_pattern,
+            normalize=True,
+        )
+        norm_stats = train_dataset.get_normalization_stats()
+        output_mean = norm_stats[2].item()
+        output_std = norm_stats[3].item()
+        print(f"Normalization: output_mean={output_mean:.4f}, output_std={output_std:.4f}")
+        del train_dataset
+
+    test_dataset = ReservoirDataset(
+        data_path=args.data_path,
+        mode="test",
+        input_file=input_pattern,
+        output_file=output_pattern,
+        normalize=args.normalize,
+    )
+    if args.normalize:
+        # Re-load train stats for the test dataset normalization
+        tmp_train = ReservoirDataset(
+            data_path=args.data_path, mode="train",
+            input_file=input_pattern, output_file=output_pattern,
+            normalize=True,
+        )
+        test_dataset.set_normalization(*tmp_train.get_normalization_stats())
+        del tmp_train
+    sample_x, sample_y = test_dataset[0]
+    num_timesteps = sample_y.shape[-1]
+    print(f"Test samples:  {len(test_dataset)}")
+    print(f"Input shape:   {tuple(sample_x.shape)}")
+    print(f"Output shape:  {tuple(sample_y.shape)}")
+    print(f"Timesteps:     {num_timesteps}")
+    print()
+
+    # -- Model --
+    model = load_model(model_config, device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Parameters:    {num_params:,}")
+    print()
+
+    # -- Inference --
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=args.batch_size, shuffle=False
+    )
+
+    all_predictions = []
+    all_targets = []
+
+    if args.mode == "autoregressive":
+        print(f"Running AUTOREGRESSIVE inference (L={args.L}, K={args.K})...")
+        with torch.no_grad():
+            for batch_idx, (x_batch, y_batch) in enumerate(test_loader):
+                x_batch = x_batch.to(device)
+                y_batch_dev = y_batch.to(device)
+
+                pred_batch = ar_validate_full_rollout(
+                    model, x_batch, y_batch_dev,
+                    L=args.L, K=args.K,
+                )
+
+                all_predictions.append(pred_batch.cpu().numpy())
+                all_targets.append(y_batch.numpy())
+
+                if (batch_idx + 1) % 10 == 0:
+                    print(f"  {(batch_idx + 1) * args.batch_size}/{len(test_dataset)} samples")
+    else:
+        print("Running FULL-MAPPING inference...")
+        with torch.no_grad():
+            for batch_idx, (x_batch, y_batch) in enumerate(test_loader):
+                x_batch = x_batch.to(device)
+                pred_batch = model(x_batch).cpu().numpy()
+
+                all_predictions.append(pred_batch)
+                all_targets.append(y_batch.numpy())
+
+                if (batch_idx + 1) % 10 == 0:
+                    print(f"  {(batch_idx + 1) * args.batch_size}/{len(test_dataset)} samples")
+
+    all_predictions = np.concatenate(all_predictions, axis=0)
+    all_targets = np.concatenate(all_targets, axis=0)
+    print(f"  {len(test_dataset)}/{len(test_dataset)} samples - done.\n")
+
+    # Denormalize to physical units for fair metric comparison
+    if args.normalize:
+        all_predictions = all_predictions * output_std + output_mean
+        all_targets = all_targets * output_std + output_mean
+        print(f"Denormalized to physical units (mean={output_mean:.4f}, std={output_std:.4f})")
+        print(f"  Pred range: [{all_predictions.min():.4f}, {all_predictions.max():.4f}]")
+        print(f"  GT range:   [{all_targets.min():.4f}, {all_targets.max():.4f}]")
+        print()
+
+    # -- Metrics --
+    print_metrics(all_predictions, all_targets, args.variable, num_timesteps)
+    print("Evaluation complete.")
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    main()
