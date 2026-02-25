@@ -999,6 +999,28 @@ def main(cfg: DictConfig) -> None:
         # Learning rate scheduling (StepLR steps automatically every step_size epochs)
         scheduler.step()
 
+        # Periodic checkpoint saving (every checkpoint_freq epochs)
+        if dist.rank == 0 and epoch % cfg.training.checkpoint_freq == 0:
+            model_to_save = model.module if isinstance(model, DDP) else model
+            periodic_path = checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model_to_save.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+            }, periodic_path)
+
+    # Save last-epoch checkpoint
+    if dist.rank == 0:
+        model_to_save = model.module if isinstance(model, DDP) else model
+        last_path = checkpoint_dir / f"last_model_{cfg.data.variable}_{model_arch_name}.pth"
+        torch.save({
+            "epoch": total_epochs,
+            "model_state_dict": model_to_save.state_dict(),
+            "val_loss": best_val_loss,
+        }, last_path)
+        logger.info(f"Saved last-epoch checkpoint: {last_path}")
+
     # Resolve metric metadata once for final summary / MLflow
     val_metric_choice = cfg.data.get("val_metric", "rmse")
     metric_name, metric_key, _ = _METRIC_REGISTRY[val_metric_choice]
