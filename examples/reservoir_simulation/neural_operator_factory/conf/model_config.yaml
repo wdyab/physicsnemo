@@ -92,15 +92,15 @@ arch:
   #   - mionet: Two-branch architecture
   #   - fourier_mionet: Two-branch with Fourier layers
   xdeeponet:
-    variant: fourier_mionet
+    variant: u_deeponet
     width: 128
     padding: 8
     
     # Branch 1: Primary spatial encoder
     branch1:
       type: spatial           # 'spatial' or 'mlp'
-      num_fourier_layers: 3   # 0 = pure UNet/Conv mode
-      num_unet_layers: 0      # 3 U-Net layers as requested
+      num_fourier_layers: 0   # 0 = pure UNet/Conv mode
+      num_unet_layers: 3      # 3 U-Net layers as requested
       num_conv_layers: 0
       modes1: 8               # H or X dimension - Only for Fourier layers
       modes2: 8               # W or Y dimension - Only for Fourier layers
@@ -108,13 +108,13 @@ arch:
       kernel_size: 3           # Kernel size for Fourier layers
       dropout: 0.0
       unet_impl: physicsnemo       # 'custom' or 'physicsnemo'
-      activation_fn: tanh
+      activation_fn: relu
     
     # Branch 2: Secondary encoder (for mionet/fourier_mionet only)
     # Note: in_features (scalar) or in_channels (vector) is auto-discovered from input data
     branch2:
       type: mlp
-      hidden_width: 64
+      hidden_width: 128
       num_layers: 3
       activation_fn: relu
     
@@ -122,7 +122,7 @@ arch:
     trunk:
       input_type: time        # 'time' (t only) - using time-only MLP as requested
       hidden_width: 128
-      num_layers: 6
+      num_layers: 4
       activation_fn: sin
     
     # Decoder: Output projection

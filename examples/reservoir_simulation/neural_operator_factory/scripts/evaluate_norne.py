@@ -211,6 +211,10 @@ def main():
         help="Auto-detect ACTNUM channel and compute metrics only on active cells.",
     )
     parser.add_argument(
+        "--mask_file", type=str, default=None,
+        help="Path to precomputed mask .pt file (overrides --mask auto-detection).",
+    )
+    parser.add_argument(
         "--normalize", action="store_true",
         help="Load data normalized (for models trained with normalize=true). "
              "Metrics are reported on denormalized (physical) values.",
@@ -288,9 +292,15 @@ def main():
     sample_x, sample_y = test_dataset[0]
     num_timesteps = sample_y.shape[-1]
 
-    # Static spatial mask (auto-detect ACTNUM)
+    # Static spatial mask
     spatial_mask = None
-    if args.mask:
+    if args.mask_file is not None:
+        import torch as _torch
+        spatial_mask = _torch.load(args.mask_file, map_location="cpu").numpy()
+        n_act = spatial_mask.sum()
+        n_tot = spatial_mask.size
+        print(f"Mask (file):   {n_act}/{n_tot} active ({100*n_act/n_tot:.1f}%)")
+    elif args.mask:
         from data.dataloader import ReservoirDataset as _DS
         # Create a temporary dataset just to trigger auto-detection
         _tmp = _DS(

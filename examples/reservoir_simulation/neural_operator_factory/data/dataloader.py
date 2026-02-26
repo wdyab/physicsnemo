@@ -109,6 +109,7 @@ class ReservoirDataset(Dataset):
         normalize: bool = True,
         expected_dimensions: Optional[str] = None,
         use_mask: bool = False,
+        mask_file: str = None,
     ):
         super().__init__()
         
@@ -118,6 +119,7 @@ class ReservoirDataset(Dataset):
         self.variable = variable
         self.expected_dimensions = expected_dimensions.lower() if expected_dimensions else None
         self.use_mask = use_mask
+        self.mask_file = mask_file
         
         if self.mode not in ["train", "val", "test"]:
             raise ValueError(f"Mode must be 'train', 'val', or 'test', got {mode}")
@@ -135,7 +137,15 @@ class ReservoirDataset(Dataset):
         
         # Compute static spatial mask from input channel
         self.static_mask = None
-        if self.use_mask:
+        if self.mask_file is not None:
+            self.static_mask = torch.load(self.mask_file, map_location="cpu")
+            n_active = self.static_mask.sum().item()
+            n_total = self.static_mask.numel()
+            _log_message(
+                f"  Mask (file): {n_active}/{n_total} active cells "
+                f"({100 * n_active / n_total:.1f}%)"
+            )
+        elif self.use_mask:
             self._auto_detect_and_compute_mask()
 
         # Compute normalization
@@ -427,6 +437,7 @@ def create_dataloaders(
     variable: Optional[str] = None,
     expected_dimensions: Optional[str] = None,
     use_mask: bool = False,
+    mask_file: str = None,
     custom_collate_fn=None,
 ) -> Tuple[torch.utils.data.DataLoader, ...]:
     """
@@ -500,6 +511,7 @@ def create_dataloaders(
         "normalize": normalize,
         "expected_dimensions": expected_dimensions,
         "use_mask": use_mask,
+        "mask_file": mask_file,
     }
     
     # Create datasets

@@ -238,6 +238,7 @@ def main(cfg: DictConfig) -> None:
     # Resolve mask setting from config
     mask_cfg = cfg.data.get("mask", {})
     use_mask = mask_cfg.get("enabled", False)
+    mask_file = mask_cfg.get("file", None)
 
     train_loader, val_loader, test_loader = create_dataloaders(
         data_path=cfg.data.data_path,
@@ -250,6 +251,7 @@ def main(cfg: DictConfig) -> None:
         variable=cfg.data.get("variable", None),
         expected_dimensions=expected_dimensions,
         use_mask=use_mask,
+        mask_file=mask_file,
     )
 
     # Get static mask for validation metrics (move to device)
