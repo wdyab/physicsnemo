@@ -25,9 +25,9 @@ data:
   # Option 2: Custom files - set input_file and output_file patterns
   variable: saturation           # 'pressure' or 'saturation' (CO2 dataset)
   input_file: norne_{mode}_input.pt               # e.g., 'norne_{mode}_input.pt' for custom datasets
-  output_file: norne_{mode}_swat.pt              # e.g., 'norne_{mode}_output.pt' for custom datasets
+  output_file: norne_{mode}_pressure.pt              # e.g., 'norne_{mode}_output.pt' for custom datasets
   
-  normalize: false
+  normalize: true
   num_workers: 1
 
   # ---------------------------------------------------------------------------
