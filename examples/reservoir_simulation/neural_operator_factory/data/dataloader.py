@@ -118,6 +118,7 @@ class ReservoirDataset(Dataset):
         self.variable = variable
         self.expected_dimensions = expected_dimensions.lower() if expected_dimensions else None
         self.use_mask = use_mask
+        self.mask_type = None
         
         if self.mode not in ["train", "val", "test"]:
             raise ValueError(f"Mode must be 'train', 'val', or 'test', got {mode}")
@@ -280,9 +281,13 @@ class ReservoirDataset(Dataset):
             if ok:
                 candidates.append((ch, (col == 0).sum().item()))
         if not candidates:
-            _log_message("  Mask: no ACTNUM channel detected; masking disabled")
-            self.use_mask = False
+            # Fallback: CO2-style per-sample mask from channel 0 (permeability).
+            # Not static — stored as channel index; applied per-sample at loss time.
+            self.mask_type = "co2"
+            self.static_mask = None
+            _log_message("  Mask: no ACTNUM found; using CO2 fallback (channel 0, per-sample)")
             return
+        self.mask_type = "actnum"
         best_ch, _ = max(candidates, key=lambda x: x[1])
         self.static_mask = (s0[..., 0, best_ch] != 0)
         n_act = self.static_mask.sum().item()

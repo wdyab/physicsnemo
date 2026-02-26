@@ -251,6 +251,7 @@ def main(cfg: DictConfig) -> None:
     static_mask = train_loader.dataset.get_static_mask()
     if static_mask is not None:
         static_mask = static_mask.to(dist.device)
+    mask_type = getattr(train_loader.dataset, "mask_type", None)
 
     # Print data info (only on rank 0)
     if dist.rank == 0:
@@ -794,8 +795,14 @@ def main(cfg: DictConfig) -> None:
 
                             for i in range(pred_denorm.shape[0]):
                                 if mask_np is not None:
+                                    # ACTNUM static mask
                                     y_pred = pred_denorm[i][mask_np]
                                     y_true = targets_denorm[i][mask_np]
+                                elif mask_type == "co2":
+                                    # CO2 per-sample mask from channel 0
+                                    mask_i = inputs_cpu[i, :, :, 0, 0] != 0
+                                    y_pred = pred_denorm[i][mask_i]
+                                    y_true = targets_denorm[i][mask_i]
                                 else:
                                     y_pred = pred_denorm[i].ravel()
                                     y_true = targets_denorm[i].ravel()
