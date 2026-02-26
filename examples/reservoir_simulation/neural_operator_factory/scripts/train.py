@@ -27,7 +27,7 @@ import hydra
 from omegaconf import DictConfig
 from pathlib import Path
 import torch
-from torch.optim import Adam, AdamW
+from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR, ExponentialLR
 from torch.cuda.amp import autocast, GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -142,7 +142,6 @@ from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, LaunchLogger
 
 from data.dataloader import create_dataloaders
-from data.scalar_utils import detect_scalar_channels, create_mionet_collate_fn, log_scalar_detection_results
 from training.losses import get_loss_function, UnifiedLoss
 from training.metrics import (
     mean_relative_error,
@@ -235,73 +234,19 @@ def main(cfg: DictConfig) -> None:
     # Get dimensions from config (used for model selection and data validation)
     expected_dimensions = cfg.arch.dimensions.lower()
     
-    # Resolve mask setting from config
-    mask_cfg = cfg.data.get("mask", {})
-    use_mask = mask_cfg.get("enabled", False)
-    mask_file = mask_cfg.get("file", None)
-
     train_loader, val_loader, test_loader = create_dataloaders(
         data_path=cfg.data.data_path,
         batch_size=cfg.training.batch_size,
         normalize=cfg.data.normalize,
         num_workers=num_workers,
         device=dist.device,
+        # Flexible file specification from config
         input_file=cfg.data.get("input_file", None),
         output_file=cfg.data.get("output_file", None),
         variable=cfg.data.get("variable", None),
+        # Validate data dimensions match config
         expected_dimensions=expected_dimensions,
-        use_mask=use_mask,
-        mask_file=mask_file,
     )
-
-    # Get static mask for validation metrics (move to device)
-    static_mask = train_loader.dataset.get_static_mask()
-    if static_mask is not None:
-        static_mask = static_mask.to(dist.device)
-
-    # Get output normalization stats for denormalizing validation metrics
-    output_mean, output_std = 0.0, 1.0
-    if cfg.data.normalize:
-        norm_stats = train_loader.dataset.get_normalization_stats()
-        output_mean = norm_stats[2].item()
-        output_std = norm_stats[3].item()
-
-    # Detect MIONet scalar channels and recreate dataloaders with MIONet collate
-    model_type_check = cfg.arch.model.lower()
-    is_mionet = (model_type_check == "xdeeponet" and
-                 cfg.arch.xdeeponet.get("variant", "") in ["mionet", "fourier_mionet"])
-    scalar_info = None
-
-    if is_mionet:
-        sample_input = train_loader.dataset.input_data[0]  # raw data, not normalized
-        scalar_info = detect_scalar_channels(sample_input)
-
-        if dist.rank == 0:
-            log_scalar_detection_results(scalar_info, logger=logger)
-
-        if scalar_info["num_scalar_channels"] > 0:
-            mionet_collate = create_mionet_collate_fn(
-                scalar_info["scalar_indices"], scalar_info["spatial_indices"]
-            )
-            train_loader, val_loader, test_loader = create_dataloaders(
-                data_path=cfg.data.data_path,
-                batch_size=cfg.training.batch_size,
-                normalize=cfg.data.normalize,
-                num_workers=num_workers,
-                device=dist.device,
-                input_file=cfg.data.get("input_file", None),
-                output_file=cfg.data.get("output_file", None),
-                variable=cfg.data.get("variable", None),
-                expected_dimensions=expected_dimensions,
-                use_mask=use_mask,
-                custom_collate_fn=mionet_collate,
-            )
-            if dist.rank == 0:
-                logger.info("Recreated dataloaders with MIONet collate function")
-        else:
-            if dist.rank == 0:
-                logger.warning("No scalar channels detected — MIONet branch2 will receive empty input")
-            is_mionet = False
 
     # Print data info (only on rank 0)
     if dist.rank == 0:
@@ -425,14 +370,6 @@ def main(cfg: DictConfig) -> None:
         # Build branch configs from yaml
         branch1_config = dict(xdeeponet_cfg.branch1)
         branch2_config = dict(xdeeponet_cfg.branch2) if variant in ['mionet', 'fourier_mionet'] else None
-        # Disable branch2 if MIONet variant but no scalar channels detected
-        if branch2_config is not None and not is_mionet:
-            if dist.rank == 0:
-                logger.warning(
-                    "No scalar channels found — disabling branch2. "
-                    "Model will run as single-branch (branch1 only)."
-                )
-            branch2_config = None
         trunk_config = dict(xdeeponet_cfg.trunk)
         
         if dimensions == "4d":
@@ -478,16 +415,13 @@ def main(cfg: DictConfig) -> None:
         raise ValueError(f"Unknown model: {model_type}. Use 'xfno' or 'xdeeponet'.")
 
     # Initialize lazy modules with a dummy forward pass (required for DDP)
+    # This is needed because nn.LazyLinear doesn't know its input size until first forward
     if dist.rank == 0:
         logger.info("Initializing model with dummy forward pass...")
     with torch.no_grad():
         dummy_batch = next(iter(train_loader))
         dummy_input = dummy_batch[0].to(dist.device)
-        if is_mionet and len(dummy_batch) == 3:
-            dummy_scalar = dummy_batch[1].to(dist.device)
-            _ = model(dummy_input, x_branch2=dummy_scalar)
-        else:
-            _ = model(dummy_input)
+        _ = model(dummy_input)
     if dist.rank == 0:
         logger.info("Model initialization complete.")
 
@@ -531,7 +465,7 @@ def main(cfg: DictConfig) -> None:
         val_loss_cfg = DictConfig(
             {
                 "base_loss_type": cfg.loss.base_loss_type,
-                "use_mask": False,  # Masking handled via spatial_mask param
+                "use_mask": cfg.loss.use_mask,  # Use same mask as training
                 "use_derivative": False,  # No derivatives in validation
                 "reduction": cfg.loss.get("reduction", "sum"),
             }
@@ -546,21 +480,16 @@ def main(cfg: DictConfig) -> None:
             loss_info = f"Train Loss: {cfg.loss.base_loss_type.upper()} | Val Loss: {cfg.loss.base_loss_type.upper()}"
             if cfg.loss.use_derivative:
                 loss_info += f" (+Derivative w={cfg.loss.derivative_weight})"
-
+            if cfg.loss.use_mask:
+                loss_info += " (+Masking)"
         logger.info(loss_info)
 
     # Create optimizer and scheduler
-    opt_type = cfg.optimizer.get("type", "adam").lower()
-    opt_kwargs = dict(
+    optimizer = Adam(
+        model.parameters(),
         lr=cfg.training.initial_lr,
         weight_decay=cfg.optimizer.weight_decay,
-        betas=tuple(cfg.optimizer.betas),
-        eps=cfg.optimizer.eps,
     )
-    if opt_type == "adamw":
-        optimizer = AdamW(model.parameters(), **opt_kwargs)
-    else:
-        optimizer = Adam(model.parameters(), **opt_kwargs)
 
     # Create scheduler based on config type
     scheduler_type = cfg.scheduler.type.lower()
@@ -581,7 +510,7 @@ def main(cfg: DictConfig) -> None:
     # Print optimizer info (only on rank 0)
     if dist.rank == 0:
         logger.info(
-            f"Optimizer: {opt_type.upper()} (lr={cfg.training.initial_lr}, wd={cfg.optimizer.weight_decay}) | AMP: {cfg.training.use_amp}"
+            f"Optimizer: Adam (lr={cfg.training.initial_lr}) | AMP: {cfg.training.use_amp}"
         )
 
     # Setup MLFlow tracking if enabled
@@ -601,9 +530,9 @@ def main(cfg: DictConfig) -> None:
             "batch_size": cfg.training.batch_size,
             "epochs": cfg.training.epochs,
             "learning_rate": cfg.training.initial_lr,
-            "optimizer": opt_type,
+            "optimizer": "Adam",
             "train_loss": cfg.loss.base_loss_type,
-            "loss_masking": use_mask,
+            "loss_masking": cfg.loss.use_mask,
             "loss_derivative": cfg.loss.use_derivative,
             "use_amp": cfg.training.use_amp,
             "use_graphs": cfg.training.use_graphs,
@@ -722,17 +651,9 @@ def main(cfg: DictConfig) -> None:
             model.train()
             total_loss = 0.0
 
-            for batch_idx, batch in enumerate(train_loader):
-                if is_mionet and len(batch) == 3:
-                    inputs, scalar_inputs, targets = batch
-                    inputs = inputs.to(dist.device)
-                    scalar_inputs = scalar_inputs.to(dist.device)
-                    targets = targets.to(dist.device)
-                else:
-                    inputs, targets = batch
-                    inputs = inputs.to(dist.device)
-                    targets = targets.to(dist.device)
-                    scalar_inputs = None
+            for batch_idx, (inputs, targets) in enumerate(train_loader):
+                inputs = inputs.to(dist.device)
+                targets = targets.to(dist.device)
                 optimizer.zero_grad()
 
                 if regime == "autoregressive":
@@ -744,22 +665,18 @@ def main(cfg: DictConfig) -> None:
                             L=ar_L, K=ar_K,
                             max_steps=ar_max_steps,
                             use_checkpointing=ar_checkpointing,
-                            x_branch2=scalar_inputs,
-                            spatial_mask=static_mask,
                         )
                     else:
                         loss = teacher_forcing_step(
                             model, inputs, targets, loss_fn,
                             L=ar_L, K=ar_K,
-                            x_branch2=scalar_inputs,
-                            spatial_mask=static_mask,
                         )
                 else:
                     # Full-mapping: single forward pass over entire trajectory
                     if cfg.training.use_amp:
                         with autocast():
-                            pred = model(inputs, x_branch2=scalar_inputs) if is_mionet else model(inputs)
-                            loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
+                            pred = model(inputs)
+                            loss = loss_fn(pred, targets, inputs)
                         scaler.scale(loss).backward()
                         scaler.step(optimizer)
                         scaler.update()
@@ -774,8 +691,8 @@ def main(cfg: DictConfig) -> None:
                             total_loss += loss.detach()
                         continue
                     else:
-                        pred = model(inputs, x_branch2=scalar_inputs) if is_mionet else model(inputs)
-                        loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
+                        pred = model(inputs)
+                        loss = loss_fn(pred, targets, inputs)
 
                 # Common backward pass (AR mode, or full-mapping without AMP)
                 loss.backward()
@@ -813,30 +730,20 @@ def main(cfg: DictConfig) -> None:
                 mre_list = []
 
                 with torch.no_grad():
-                    for val_batch in val_loader:
-                        if is_mionet and len(val_batch) == 3:
-                            inputs, scalar_inputs, targets = val_batch
-                            inputs = inputs.to(dist.device)
-                            scalar_inputs = scalar_inputs.to(dist.device)
-                            targets = targets.to(dist.device)
-                        else:
-                            inputs, targets = val_batch
-                            inputs = inputs.to(dist.device)
-                            targets = targets.to(dist.device)
-                            scalar_inputs = None
+                    for inputs, targets in val_loader:
+                        inputs = inputs.to(dist.device)
+                        targets = targets.to(dist.device)
 
-                        # Forward pass — match training regime
-                        if regime == "autoregressive":
-                            pred = ar_validate_full_rollout(
-                                model, inputs, targets,
-                                L=ar_L, K=ar_K, x_branch2=scalar_inputs,
-                            )
-                        elif is_mionet:
-                            pred = model(inputs, x_branch2=scalar_inputs)
+                        # Forward pass with optional AMP
+                        if cfg.training.use_amp:
+                            with autocast():
+                                pred = model(inputs)
+                                # Use Relative L2 loss for validation
+                                val_loss = val_loss_fn(pred, targets, inputs)
                         else:
                             pred = model(inputs)
-
-                        val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
+                            # Use Relative L2 loss for validation
+                            val_loss = val_loss_fn(pred, targets, inputs)
 
                         # Aggregate validation loss across GPUs
                         if dist.world_size > 1:
@@ -849,23 +756,38 @@ def main(cfg: DictConfig) -> None:
                         else:
                             total_val_loss += val_loss.detach()
 
-                        # Calculate validation metric on rank 0 only
+                        # Calculate validation metric on rank 0 only (for logging)
                         if dist.rank == 0:
                             pred_cpu = pred.cpu().numpy()
                             targets_cpu = targets.cpu().numpy()
+                            inputs_cpu = inputs.cpu().numpy()
 
-                            # Denormalize to physical units
-                            pred_denorm = pred_cpu * output_std + output_mean
-                            targets_denorm = targets_cpu * output_std + output_mean
+                            # Optional denormalization (config-driven)
+                            denorm_name = cfg.data.get("denormalize_fn", None)
+                            if denorm_name and denorm_name in _DENORM_REGISTRY:
+                                denorm_fn = _DENORM_REGISTRY[denorm_name]
+                                pred_denorm = denorm_fn(pred_cpu)
+                                targets_denorm = denorm_fn(targets_cpu)
+                            else:
+                                pred_denorm = pred_cpu
+                                targets_denorm = targets_cpu
 
+                            # Resolve metric function from config
                             val_metric_choice = cfg.data.get("val_metric", "rmse")
+                            if val_metric_choice not in _METRIC_REGISTRY:
+                                raise ValueError(
+                                    f"Unknown val_metric '{val_metric_choice}'. "
+                                    f"Choices: {list(_METRIC_REGISTRY.keys())}"
+                                )
                             _, _, metric_fn = _METRIC_REGISTRY[val_metric_choice]
-                            mask_np = static_mask.cpu().numpy() if static_mask is not None else None
+
+                            use_mask = cfg.data.get("use_reservoir_mask", False)
 
                             for i in range(pred_denorm.shape[0]):
-                                if mask_np is not None:
-                                    y_pred = pred_denorm[i][mask_np]
-                                    y_true = targets_denorm[i][mask_np]
+                                if use_mask:
+                                    mask = inputs_cpu[i, :, :, 0, 0] != 0
+                                    y_pred = pred_denorm[i][mask]
+                                    y_true = targets_denorm[i][mask]
                                 else:
                                     y_pred = pred_denorm[i].ravel()
                                     y_true = targets_denorm[i].ravel()
@@ -1005,17 +927,6 @@ def main(cfg: DictConfig) -> None:
 
         # Learning rate scheduling (StepLR steps automatically every step_size epochs)
         scheduler.step()
-
-    # Save last-epoch checkpoint
-    if dist.rank == 0:
-        model_to_save = model.module if isinstance(model, DDP) else model
-        last_path = checkpoint_dir / f"last_model_{cfg.data.variable}_{model_arch_name}.pth"
-        torch.save({
-            "epoch": total_epochs,
-            "model_state_dict": model_to_save.state_dict(),
-            "val_loss": best_val_loss,
-        }, last_path)
-        logger.info(f"Saved last-epoch checkpoint: {last_path}")
 
     # Resolve metric metadata once for final summary / MLflow
     val_metric_choice = cfg.data.get("val_metric", "rmse")

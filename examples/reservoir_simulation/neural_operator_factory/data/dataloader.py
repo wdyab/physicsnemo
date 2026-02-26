@@ -108,8 +108,6 @@ class ReservoirDataset(Dataset):
         variable: Optional[str] = None,
         normalize: bool = True,
         expected_dimensions: Optional[str] = None,
-        use_mask: bool = False,
-        mask_file: str = None,
     ):
         super().__init__()
         
@@ -118,8 +116,6 @@ class ReservoirDataset(Dataset):
         self.normalize = normalize
         self.variable = variable
         self.expected_dimensions = expected_dimensions.lower() if expected_dimensions else None
-        self.use_mask = use_mask
-        self.mask_file = mask_file
         
         if self.mode not in ["train", "val", "test"]:
             raise ValueError(f"Mode must be 'train', 'val', or 'test', got {mode}")
@@ -135,19 +131,6 @@ class ReservoirDataset(Dataset):
         # Detect dimensions and set metadata
         self._detect_dimensions()
         
-        # Compute static spatial mask from input channel
-        self.static_mask = None
-        if self.mask_file is not None:
-            self.static_mask = torch.load(self.mask_file, map_location="cpu")
-            n_active = self.static_mask.sum().item()
-            n_total = self.static_mask.numel()
-            _log_message(
-                f"  Mask (file): {n_active}/{n_total} active cells "
-                f"({100 * n_active / n_total:.1f}%)"
-            )
-        elif self.use_mask:
-            self._auto_detect_and_compute_mask()
-
         # Compute normalization
         if self.normalize:
             self._compute_normalization()
@@ -273,61 +256,6 @@ class ReservoirDataset(Dataset):
             f"Spatial: {self.spatial_shape} | T: {self.time_steps} | C: {self.num_channels}"
         )
     
-    def _auto_detect_and_compute_mask(self):
-        """Auto-detect the ACTNUM channel and compute a static spatial mask.
-
-        ACTNUM is identified by its unique fingerprint: binary (only 0/1),
-        static (constant across time), and identical across samples.
-        """
-        s0 = self.input_data[0]  # (*spatial, T, C)
-        n_channels = s0.shape[-1]
-        n_samples = min(self.input_data.shape[0], 3)
-
-        candidates = []
-        for ch in range(n_channels):
-            col = s0[..., 0, ch]  # (*spatial) at T=0
-
-            # Must be binary (only 0 and 1)
-            unique = col.unique()
-            if not (unique.numel() <= 2 and all(v in (0.0, 1.0) for v in unique.tolist())):
-                continue
-
-            # Must be static across time
-            if not torch.equal(s0[..., 0, ch], s0[..., -1, ch]):
-                continue
-
-            # Must be identical across first few samples
-            same_across_samples = True
-            for si in range(1, n_samples):
-                if not torch.equal(col, self.input_data[si][..., 0, ch]):
-                    same_across_samples = False
-                    break
-            if not same_across_samples:
-                continue
-
-            n_zeros = (col == 0).sum().item()
-            candidates.append((ch, n_zeros))
-
-        if not candidates:
-            _log_message("  Mask: no ACTNUM channel detected — masking disabled")
-            self.use_mask = False
-            return
-
-        # Pick the candidate with the most zeros (most inactive cells)
-        best_ch, _ = max(candidates, key=lambda x: x[1])
-        spatial_slice = s0[..., 0, best_ch]
-        self.static_mask = (spatial_slice != 0)
-        n_active = self.static_mask.sum().item()
-        n_total = self.static_mask.numel()
-        _log_message(
-            f"  Mask: auto-detected ACTNUM at channel {best_ch} — "
-            f"{n_active}/{n_total} active cells ({100 * n_active / n_total:.1f}%)"
-        )
-
-    def get_static_mask(self) -> Optional[torch.Tensor]:
-        """Return the static spatial mask, or None if masking is disabled."""
-        return self.static_mask
-
     def _compute_normalization(self):
         """Compute normalization statistics (dimension-agnostic)."""
         if self.mode == "train":
@@ -436,9 +364,6 @@ def create_dataloaders(
     output_file: Optional[str] = None,
     variable: Optional[str] = None,
     expected_dimensions: Optional[str] = None,
-    use_mask: bool = False,
-    mask_file: str = None,
-    custom_collate_fn=None,
 ) -> Tuple[torch.utils.data.DataLoader, ...]:
     """
     Create train, validation, and test dataloaders.
@@ -510,8 +435,6 @@ def create_dataloaders(
         "variable": variable,
         "normalize": normalize,
         "expected_dimensions": expected_dimensions,
-        "use_mask": use_mask,
-        "mask_file": mask_file,
     }
     
     # Create datasets
@@ -525,12 +448,8 @@ def create_dataloaders(
         
         if is_distributed:
             import torch.distributed as dist_torch
-            gpu_stats = []
             for stat in norm_stats:
-                s = stat.cuda()
-                dist_torch.broadcast(s, src=0)
-                gpu_stats.append(s.cpu())
-            norm_stats = tuple(gpu_stats)
+                dist_torch.broadcast(stat, src=0)
         
         val_dataset.set_normalization(*norm_stats)
         test_dataset.set_normalization(*norm_stats)
@@ -555,7 +474,7 @@ def create_dataloaders(
         "num_workers": num_workers,
         "pin_memory": use_pin_memory,
         "persistent_workers": num_workers > 0,
-        "collate_fn": custom_collate_fn if custom_collate_fn is not None else collate_fn,
+        "collate_fn": collate_fn,
     }
     
     train_loader = DataLoader(

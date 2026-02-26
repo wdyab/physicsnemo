@@ -1,57 +1,54 @@
 # Neural Operator Factory for Reservoir Simulation
 
-A flexible framework for training and evaluating neural operator surrogate models for reservoir simulation, built on [PhysicsNeMo](https://github.com/NVIDIA/physicsnemo). Supports FNO, DeepONet, and U-Net architectures on both 2D and 3D spatial datasets with full-mapping and autoregressive training regimes.
+A flexible framework for training and evaluating neural operator surrogate models for reservoir simulation, built on [PhysicsNeMo](https://github.com/NVIDIA/physicsnemo). Supports FNO, DeepONet, and U-Net architectures on both 2D and 3D spatial datasets.
 
 ## Directory Structure
 
 ```
 neural_operator_factory/
 ├── models/                         # Neural operator architectures
-│   ├── __init__.py
+│   ├── __init__.py                 # Exports all model classes
 │   ├── xfno.py                     # FNO variants: UFNO, UFNONet, FNO4D, FNO4DNet
 │   ├── deeponet.py                 # DeepONet variants (2D/3D): 7 configurable variants
 │   ├── unet.py                     # Custom UNet2D, UNet3D modules
 │   └── physicsnemo_unet.py         # PhysicsNeMo UNet wrappers, StandaloneUNet
 │
 ├── data/                           # Data loading and validation
-│   ├── __init__.py
-│   ├── dataloader.py               # ReservoirDataset (3D/4D), dataloaders, static masking
+│   ├── __init__.py                 # Exports dataset and validation utilities
+│   ├── dataloader.py               # ReservoirDataset (3D/4D), dataloaders
 │   ├── validation.py               # Shape validation, dimension detection
-│   └── scalar_utils.py             # MIONet scalar channel auto-detection
+│   └── scalar_utils.py             # MIONet scalar channel detection
 │
-├── training/                       # Training utilities
-│   ├── __init__.py
+├── training/                       # Loss functions and evaluation metrics
+│   ├── __init__.py                 # Exports losses and metrics
 │   ├── losses.py                   # UnifiedLoss, SimpleRelativeL2Loss
-│   ├── metrics.py                  # NumPy + PyTorch metrics, PhysicsNeMo imports
-│   └── ar_utils.py                 # Autoregressive training (temporal bundling, rollout)
+│   └── metrics.py                  # NumPy + PyTorch metrics, PhysicsNeMo imports
 │
 ├── utils/                          # Utility functions
-│   ├── __init__.py
-│   ├── padding.py                  # Dimension-agnostic spatial padding
+│   ├── __init__.py                 # Exports normalization and visualization
 │   ├── co2_normalization.py        # CO2-specific denormalization helpers
-│   └── co2_visualization.py        # CO2-specific plotting utilities
+│   ├── co2_visualization.py        # CO2-specific plotting utilities
+│   └── padding.py                  # Dimension-agnostic spatial padding
 │
 ├── scripts/                        # Runnable entry points
-│   ├── train.py                    # Main training script (DDP, AR, masking, MLflow)
-│   ├── evaluate_norne.py           # Norne evaluation (full-mapping + AR rollout)
+│   ├── train.py                    # Main training script (DDP, AMP, MLflow)
 │   ├── evaluate_co2_pressure.py    # CO2-specific pressure evaluation
 │   └── evaluate_co2_saturation.py  # CO2-specific saturation evaluation
 │
 ├── conf/                           # Hydra configuration
 │   ├── model_config.yaml           # Architecture and loss settings
-│   └── training_config.yaml        # Training regime, data, masking, hyperparameters
+│   └── training_config.yaml        # Training hyperparameters and data paths
 │
 ├── tests/                          # Unit tests
-│   ├── conftest.py
-│   ├── test_xfno.py
-│   ├── test_unet.py
-│   ├── test_losses.py
-│   ├── test_dataset.py
-│   ├── test_data_validation.py
-│   ├── test_padding.py
-│   └── test_ar_utils.py
+│   ├── conftest.py                 # Shared fixtures
+│   ├── test_xfno.py               # FNO model tests
+│   ├── test_unet.py               # UNet model tests
+│   ├── test_losses.py             # Loss function tests
+│   ├── test_dataset.py            # Dataset and dataloader tests
+│   ├── test_data_validation.py    # Data validation tests
+│   └── test_padding.py             # Padding utility tests
 │
-├── train.sbatch                    # Slurm submission script
+├── docs/                           # Documentation
 ├── README.md
 └── requirements.txt
 ```
@@ -67,8 +64,6 @@ neural_operator_factory/
 | **Conv-FNO** | FNO + 3D convolutions | 3D only |
 | **FNO4D** | 4D FNO (3D spatial + time) | 4D only |
 
-All FNO wrappers support flexible `target_times` for autoregressive temporal bundling.
-
 ### DeepONet Family (`models/deeponet.py`)
 
 | Variant | Description |
@@ -81,95 +76,54 @@ All FNO wrappers support flexible `target_times` for autoregressive temporal bun
 | `mionet` | Multi-input operator network (2 branches) |
 | `fourier_mionet` | MIONet with Fourier layers |
 
-Both 2D spatial (`DeepONetWrapper`) and 3D spatial (`DeepONet3DWrapper`) versions are provided. All wrappers support `target_times` for autoregressive temporal bundling with flexible K (output window). MIONet variants auto-detect scalar input channels for branch2; if none are found, branch2 is disabled and the model runs as single-branch.
+Both 2D spatial (`DeepONet`, `DeepONetWrapper`) and 3D spatial (`DeepONet3D`, `DeepONet3DWrapper`) versions are provided.
 
 ### U-Net Baselines (`models/unet.py`, `models/physicsnemo_unet.py`)
 
 - Custom `UNet2D` / `UNet3D` with 3-level encoder-decoder
 - PhysicsNeMo `StandaloneUNet` wrapper for baseline comparison
 
-## Training Regimes
-
-### Full Mapping
-
-Predicts the entire trajectory in a single forward pass. The model receives all T timesteps and outputs all T timesteps at once.
-
-```yaml
-training:
-  regime: full_mapping
-  epochs: 200
-```
-
-### Autoregressive (with Temporal Bundling)
-
-Predicts K timesteps from L context timesteps, with two-phase training:
-
-1. **Teacher Forcing** — model sees ground-truth inputs (learns the physics)
-2. **Rollout** — model sees its own predictions (learns self-correction)
-
-Random starting points are sampled each iteration for memory efficiency and uniform trajectory coverage.
-
-```yaml
-training:
-  regime: autoregressive
-  autoregressive:
-    input_window: 1       # L: context timesteps
-    output_window: 3      # K: predicted timesteps per step
-    teacher_forcing_epochs: 140
-    rollout_epochs: 60
-    max_rollout_steps: 4
-    gradient_checkpointing: true
-```
-
 ## Dataset Support
 
-The `ReservoirDataset` class supports:
+The `ReservoirDataset` class (`data/dataloader.py`) supports:
 
 - **3D data**: `(N, H, W, T, C)` input, `(N, H, W, T)` output (e.g., CO2 sequestration)
 - **4D data**: `(N, X, Y, Z, T, C)` input, `(N, X, Y, Z, T)` output (e.g., Norne field)
 - Automatic dimension detection and validation
-- Z-score normalization with distributed broadcast
-- Flexible file naming patterns (`{mode}` placeholder for train/val/test)
-
-### Spatial Masking
-
-Inactive reservoir cells (outside the geological model) can be automatically excluded from loss and metrics. The ACTNUM channel is auto-detected by its unique binary/static/cross-sample fingerprint — no channel index configuration needed.
-
-```yaml
-data:
-  mask:
-    enabled: true    # Auto-detects ACTNUM, masks inactive cells
-```
-
-### MIONet Scalar Detection
-
-For MIONet variants, input channels are automatically classified as spatial (varying across the grid) or scalar (constant per realization). Scalar channels are routed to branch2; spatial channels go to branch1. If no scalar channels are found, branch2 is disabled and the model runs as single-branch.
+- Flexible file naming patterns
+- Distributed data loading with normalization sharing
 
 ## Quick Start
 
 ### Training
 
-1. Configure `conf/training_config.yaml` (data paths, regime, masking)
-2. Configure `conf/model_config.yaml` (architecture, dimensions, loss)
-3. Submit:
+1. Configure your data path in `conf/training_config.yaml`:
+   ```yaml
+   data:
+     data_path: /path/to/your/data
+     variable: pressure  # or 'saturation'
+   ```
+
+2. Select model and dimensions in `conf/model_config.yaml`:
+   ```yaml
+   arch:
+     dimensions: 3d        # '3d' or '4d'
+     model: xfno           # 'xfno' or 'xdeeponet'
+   ```
+
+3. Run training:
    ```bash
-   sbatch train.sbatch
+   # Single GPU
+   python scripts/train.py
+
+   # Multi-GPU (DDP)
+   torchrun --nproc_per_node=4 scripts/train.py
    ```
 
 ### Evaluation
 
 ```bash
-# Norne — autoregressive rollout with ACTNUM masking
-python scripts/evaluate_norne.py --mode autoregressive --L 1 --K 3 --mask
-
-# Norne — full-mapping
-python scripts/evaluate_norne.py --mode full_mapping
-
-# Norne — pressure (with denormalization)
-python scripts/evaluate_norne.py --mode autoregressive --L 1 --K 3 --mask --normalize \
-    --output_file 'norne_{mode}_pressure.pt' --variable PRESSURE
-
-# CO2-specific evaluation
+# CO2-specific evaluation scripts
 python scripts/evaluate_co2_pressure.py --checkpoint checkpoints/best_model_pressure_*.pth
 python scripts/evaluate_co2_saturation.py --checkpoint checkpoints/best_model_saturation_*.pth
 ```
@@ -177,6 +131,7 @@ python scripts/evaluate_co2_saturation.py --checkpoint checkpoints/best_model_sa
 ### Testing
 
 ```bash
+cd examples/reservoir_simulation/neural_operator_factory
 pytest tests/ -v
 ```
 
@@ -189,11 +144,11 @@ pytest tests/ -v
 | `relative_l2` | Scale-invariant relative L2 |
 | `huber` | Smooth L1 (Huber) |
 
-Optional: spatial masking (ACTNUM), physics-informed derivative constraints.
+Optional features: domain masking, physics-informed spatial derivative constraints.
 
 ## Evaluation Metrics
 
-NumPy-based (post-processing): MAE, RMSE, MRE, MPE, R-squared, PSNR, Relative L1/L2, Normalized MSE
+NumPy-based (post-processing): MRE, MPE, MAE, R², PSNR, Relative L1/L2, Normalized MSE
 
 PyTorch-based (training): `mse_torch`, `rmse_torch`, `mae_torch`, `relative_l2_torch`, `r2_score_torch`, `psnr_torch`
 
