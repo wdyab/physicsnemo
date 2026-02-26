@@ -734,15 +734,18 @@ def main(cfg: DictConfig) -> None:
                         inputs = inputs.to(dist.device)
                         targets = targets.to(dist.device)
 
-                        # Forward pass with optional AMP
-                        if cfg.training.use_amp:
-                            with autocast():
-                                pred = model(inputs)
-                                # Use Relative L2 loss for validation
-                                val_loss = val_loss_fn(pred, targets, inputs)
+                        # Forward pass — same regime as training
+                        if regime == "autoregressive":
+                            pred = ar_validate_full_rollout(
+                                model, inputs, targets, L=ar_L, K=ar_K,
+                            )
                         else:
                             pred = model(inputs)
-                            # Use Relative L2 loss for validation
+
+                        if cfg.training.use_amp:
+                            with autocast():
+                                val_loss = val_loss_fn(pred, targets, inputs)
+                        else:
                             val_loss = val_loss_fn(pred, targets, inputs)
 
                         # Aggregate validation loss across GPUs
