@@ -134,10 +134,10 @@ class ReservoirDataset(Dataset):
         # Detect dimensions and set metadata
         self._detect_dimensions()
         
-        # Auto-detect ACTNUM and compute static mask
+        # Resolve masking strategy
         self.static_mask = None
         if self.use_mask:
-            self._auto_detect_actnum_mask()
+            self._resolve_mask()
 
         # Compute normalization
         if self.normalize:
@@ -264,13 +264,12 @@ class ReservoirDataset(Dataset):
             f"Spatial: {self.spatial_shape} | T: {self.time_steps} | C: {self.num_channels}"
         )
     
-    def _auto_detect_actnum_mask(self):
-        """Auto-detect ACTNUM channel (binary, static, cross-sample identical)."""
+    def _find_actnum_channel(self):
+        """Find ACTNUM channel index (binary, static, cross-sample). Returns index or None."""
         s0 = self.input_data[0]
-        n_ch = s0.shape[-1]
         n_check = min(self.input_data.shape[0], 3)
         candidates = []
-        for ch in range(n_ch):
+        for ch in range(s0.shape[-1]):
             col = s0[..., 0, ch]
             vals = col.unique()
             if not (vals.numel() <= 2 and all(v in (0.0, 1.0) for v in vals.tolist())):
@@ -281,18 +280,38 @@ class ReservoirDataset(Dataset):
             if ok:
                 candidates.append((ch, (col == 0).sum().item()))
         if not candidates:
-            # Fallback: CO2-style per-sample mask from channel 0 (permeability).
-            # Not static — stored as channel index; applied per-sample at loss time.
+            return None
+        return max(candidates, key=lambda x: x[1])[0]
+
+    def _is_co2_dataset(self):
+        """Check if this is the specific CO2 sequestration dataset."""
+        return self.variable is not None and self.variable.lower() in ("pressure", "saturation", "dp", "sg")
+
+    def _resolve_mask(self):
+        """Resolve masking strategy: ACTNUM > CO2 channel-0 > output-zeros."""
+        # Step 1: Try ACTNUM auto-detect
+        actnum_ch = self._find_actnum_channel()
+        if actnum_ch is not None:
+            self.mask_type = "actnum"
+            self.static_mask = (self.input_data[0][..., 0, actnum_ch] != 0)
+            n_act = self.static_mask.sum().item()
+            n_tot = self.static_mask.numel()
+            _log_message(f"  Mask [ACTNUM]: ch {actnum_ch}, {n_act}/{n_tot} active ({100*n_act/n_tot:.1f}%)")
+            return
+
+        # Step 2: CO2 sequestration dataset — per-sample channel-0 mask
+        if self._is_co2_dataset():
             self.mask_type = "co2"
             self.static_mask = None
-            _log_message("  Mask: no ACTNUM found; using CO2 fallback (channel 0, per-sample)")
+            _log_message("  Mask [CO2]: per-sample from channel 0 (permeability)")
             return
-        self.mask_type = "actnum"
-        best_ch, _ = max(candidates, key=lambda x: x[1])
-        self.static_mask = (s0[..., 0, best_ch] != 0)
+
+        # Step 3: Fallback — output-zeros (cells zero across all timesteps)
+        self.mask_type = "output_zeros"
+        self.static_mask = (self.output_data[0].abs().sum(dim=-1) != 0)
         n_act = self.static_mask.sum().item()
         n_tot = self.static_mask.numel()
-        _log_message(f"  Mask: ACTNUM at ch {best_ch} — {n_act}/{n_tot} active ({100*n_act/n_tot:.1f}%)")
+        _log_message(f"  Mask [output-zeros]: {n_act}/{n_tot} active ({100*n_act/n_tot:.1f}%)")
 
     def get_static_mask(self):
         """Return static spatial mask or None."""
