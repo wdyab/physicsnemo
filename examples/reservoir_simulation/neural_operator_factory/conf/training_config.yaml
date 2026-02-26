@@ -39,11 +39,11 @@ data:
   #   CO2 examples: 'mre' for pressure, 'mpe' for saturation.
   val_metric: rmse
 
-  # use_reservoir_mask: Apply a permeability-based reservoir mask before
-  #   computing the validation metric. Only meaningful for the CO2 dataset
-  #   where channel 0 of the input is a permeability field.
-  #   Default: false (no masking — works for any dataset).
-  use_reservoir_mask: false
+  # mask_enabled: Exclude inactive cells from loss and metrics.
+  #   1) Auto-detects ACTNUM channel if present (any structured-grid dataset)
+  #   2) Falls back to CO2 per-sample channel-0 mask (CO2 dataset only)
+  #   3) Falls back to output-zeros mask (all other datasets)
+  mask_enabled: false
 
   # denormalize_fn: Name of a denormalization function to apply to
   #   predictions and targets before computing validation metrics.

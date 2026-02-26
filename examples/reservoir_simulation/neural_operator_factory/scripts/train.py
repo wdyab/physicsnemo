@@ -470,7 +470,7 @@ def main(cfg: DictConfig) -> None:
         val_loss_cfg = DictConfig(
             {
                 "base_loss_type": cfg.loss.base_loss_type,
-                "use_mask": cfg.loss.use_mask,  # Use same mask as training
+                "use_mask": False,  # Masking handled via spatial_mask param
                 "use_derivative": False,  # No derivatives in validation
                 "reduction": cfg.loss.get("reduction", "sum"),
             }
@@ -485,8 +485,7 @@ def main(cfg: DictConfig) -> None:
             loss_info = f"Train Loss: {cfg.loss.base_loss_type.upper()} | Val Loss: {cfg.loss.base_loss_type.upper()}"
             if cfg.loss.use_derivative:
                 loss_info += f" (+Derivative w={cfg.loss.derivative_weight})"
-            if cfg.loss.use_mask:
-                loss_info += " (+Masking)"
+
         logger.info(loss_info)
 
     # Create optimizer and scheduler
@@ -537,7 +536,7 @@ def main(cfg: DictConfig) -> None:
             "learning_rate": cfg.training.initial_lr,
             "optimizer": "Adam",
             "train_loss": cfg.loss.base_loss_type,
-            "loss_masking": cfg.loss.use_mask,
+            "loss_masking": cfg.data.get("mask_enabled", False),
             "loss_derivative": cfg.loss.use_derivative,
             "use_amp": cfg.training.use_amp,
             "use_graphs": cfg.training.use_graphs,
