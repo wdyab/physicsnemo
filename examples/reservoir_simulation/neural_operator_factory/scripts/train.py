@@ -240,13 +240,17 @@ def main(cfg: DictConfig) -> None:
         normalize=cfg.data.normalize,
         num_workers=num_workers,
         device=dist.device,
-        # Flexible file specification from config
         input_file=cfg.data.get("input_file", None),
         output_file=cfg.data.get("output_file", None),
         variable=cfg.data.get("variable", None),
-        # Validate data dimensions match config
         expected_dimensions=expected_dimensions,
+        use_mask=cfg.data.get("mask_enabled", False),
     )
+
+    # Get static mask (move to GPU if available)
+    static_mask = train_loader.dataset.get_static_mask()
+    if static_mask is not None:
+        static_mask = static_mask.to(dist.device)
 
     # Print data info (only on rank 0)
     if dist.rank == 0:
@@ -665,18 +669,20 @@ def main(cfg: DictConfig) -> None:
                             L=ar_L, K=ar_K,
                             max_steps=ar_max_steps,
                             use_checkpointing=ar_checkpointing,
+                            spatial_mask=static_mask,
                         )
                     else:
                         loss = teacher_forcing_step(
                             model, inputs, targets, loss_fn,
                             L=ar_L, K=ar_K,
+                            spatial_mask=static_mask,
                         )
                 else:
                     # Full-mapping: single forward pass over entire trajectory
                     if cfg.training.use_amp:
                         with autocast():
                             pred = model(inputs)
-                            loss = loss_fn(pred, targets, inputs)
+                            loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
                         scaler.scale(loss).backward()
                         scaler.step(optimizer)
                         scaler.update()
@@ -692,7 +698,7 @@ def main(cfg: DictConfig) -> None:
                         continue
                     else:
                         pred = model(inputs)
-                        loss = loss_fn(pred, targets, inputs)
+                        loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
 
                 # Common backward pass (AR mode, or full-mapping without AMP)
                 loss.backward()
@@ -744,9 +750,9 @@ def main(cfg: DictConfig) -> None:
 
                         if cfg.training.use_amp:
                             with autocast():
-                                val_loss = val_loss_fn(pred, targets, inputs)
+                                val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
                         else:
-                            val_loss = val_loss_fn(pred, targets, inputs)
+                            val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
 
                         # Aggregate validation loss across GPUs
                         if dist.world_size > 1:
@@ -784,13 +790,12 @@ def main(cfg: DictConfig) -> None:
                                 )
                             _, _, metric_fn = _METRIC_REGISTRY[val_metric_choice]
 
-                            use_mask = cfg.data.get("use_reservoir_mask", False)
+                            mask_np = static_mask.cpu().numpy() if static_mask is not None else None
 
                             for i in range(pred_denorm.shape[0]):
-                                if use_mask:
-                                    mask = inputs_cpu[i, :, :, 0, 0] != 0
-                                    y_pred = pred_denorm[i][mask]
-                                    y_true = targets_denorm[i][mask]
+                                if mask_np is not None:
+                                    y_pred = pred_denorm[i][mask_np]
+                                    y_true = targets_denorm[i][mask_np]
                                 else:
                                     y_pred = pred_denorm[i].ravel()
                                     y_true = targets_denorm[i].ravel()

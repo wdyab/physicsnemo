@@ -69,7 +69,7 @@ class DummyModelNoTargetTimes(nn.Module):
         return torch.zeros(B, H, W, T_in, device=x.device)
 
 
-def dummy_loss(pred, target, inputs):
+def dummy_loss(pred, target, inputs, spatial_mask=None):
     return torch.mean((pred - target) ** 2)
 
 

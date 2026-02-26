@@ -97,13 +97,21 @@ def load_model(model_config, device):
     return model.to(device)
 
 
-def print_metrics(all_predictions, all_targets, variable, num_timesteps):
+def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial_mask=None):
     """Compute and print all metrics in XMGN-compatible format."""
-    overall_mae = np.mean(np.abs(all_predictions - all_targets))
-    overall_mse = np.mean((all_predictions - all_targets) ** 2)
+    if spatial_mask is not None:
+        m = spatial_mask
+        for _ in range(all_predictions.ndim - m.ndim):
+            m = m[np.newaxis] if m.ndim < all_predictions.ndim - 1 else m[..., np.newaxis]
+        m = np.broadcast_to(m, all_predictions.shape)
+        pf, gf = all_predictions[m], all_targets[m]
+    else:
+        pf, gf = all_predictions.ravel(), all_targets.ravel()
+    overall_mae = np.mean(np.abs(pf - gf))
+    overall_mse = np.mean((pf - gf) ** 2)
     overall_rmse = np.sqrt(overall_mse)
-    overall_rel_l2 = compute_relative_l2_error(all_predictions, all_targets)
-    overall_r2 = compute_r2_score(all_predictions.ravel(), all_targets.ravel())
+    overall_rel_l2 = compute_relative_l2_error(pf, gf)
+    overall_r2 = compute_r2_score(pf, gf)
 
     print("=" * 70)
     print("EVALUATION RESULTS")
@@ -162,6 +170,7 @@ def main():
     parser.add_argument("--output_file", type=str, default="norne_test_swat.pt")
     parser.add_argument("--variable", type=str, default="SWAT")
     parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--mask", action="store_true", help="Auto-detect ACTNUM and evaluate on active cells only")
     parser.add_argument(
         "--mode", type=str, default="full_mapping",
         choices=["full_mapping", "autoregressive"],
@@ -246,6 +255,22 @@ def main():
         del tmp_train
     sample_x, sample_y = test_dataset[0]
     num_timesteps = sample_y.shape[-1]
+
+    spatial_mask = None
+    if args.mask:
+        mask_ds = ReservoirDataset(
+            data_path=args.data_path, mode="test",
+            input_file=args.input_file, output_file=args.output_file,
+            normalize=False, use_mask=True,
+        )
+        spatial_mask = mask_ds.get_static_mask()
+        if spatial_mask is not None:
+            sm = spatial_mask.numpy()
+            print(f"Mask:          {sm.sum()}/{sm.size} active ({100*sm.mean():.1f}%)")
+        else:
+            print("Mask:          no ACTNUM detected")
+        del mask_ds
+
     print(f"Test samples:  {len(test_dataset)}")
     print(f"Input shape:   {tuple(sample_x.shape)}")
     print(f"Output shape:  {tuple(sample_y.shape)}")
@@ -312,7 +337,8 @@ def main():
         print()
 
     # -- Metrics --
-    print_metrics(all_predictions, all_targets, args.variable, num_timesteps)
+    sm_np = spatial_mask.numpy() if spatial_mask is not None else None
+    print_metrics(all_predictions, all_targets, args.variable, num_timesteps, sm_np)
     print("Evaluation complete.")
     print("=" * 70)
 

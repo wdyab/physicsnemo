@@ -108,6 +108,7 @@ class ReservoirDataset(Dataset):
         variable: Optional[str] = None,
         normalize: bool = True,
         expected_dimensions: Optional[str] = None,
+        use_mask: bool = False,
     ):
         super().__init__()
         
@@ -116,6 +117,7 @@ class ReservoirDataset(Dataset):
         self.normalize = normalize
         self.variable = variable
         self.expected_dimensions = expected_dimensions.lower() if expected_dimensions else None
+        self.use_mask = use_mask
         
         if self.mode not in ["train", "val", "test"]:
             raise ValueError(f"Mode must be 'train', 'val', or 'test', got {mode}")
@@ -131,6 +133,11 @@ class ReservoirDataset(Dataset):
         # Detect dimensions and set metadata
         self._detect_dimensions()
         
+        # Auto-detect ACTNUM and compute static mask
+        self.static_mask = None
+        if self.use_mask:
+            self._auto_detect_actnum_mask()
+
         # Compute normalization
         if self.normalize:
             self._compute_normalization()
@@ -256,6 +263,36 @@ class ReservoirDataset(Dataset):
             f"Spatial: {self.spatial_shape} | T: {self.time_steps} | C: {self.num_channels}"
         )
     
+    def _auto_detect_actnum_mask(self):
+        """Auto-detect ACTNUM channel (binary, static, cross-sample identical)."""
+        s0 = self.input_data[0]
+        n_ch = s0.shape[-1]
+        n_check = min(self.input_data.shape[0], 3)
+        candidates = []
+        for ch in range(n_ch):
+            col = s0[..., 0, ch]
+            vals = col.unique()
+            if not (vals.numel() <= 2 and all(v in (0.0, 1.0) for v in vals.tolist())):
+                continue
+            if not torch.equal(s0[..., 0, ch], s0[..., -1, ch]):
+                continue
+            ok = all(torch.equal(col, self.input_data[si][..., 0, ch]) for si in range(1, n_check))
+            if ok:
+                candidates.append((ch, (col == 0).sum().item()))
+        if not candidates:
+            _log_message("  Mask: no ACTNUM channel detected; masking disabled")
+            self.use_mask = False
+            return
+        best_ch, _ = max(candidates, key=lambda x: x[1])
+        self.static_mask = (s0[..., 0, best_ch] != 0)
+        n_act = self.static_mask.sum().item()
+        n_tot = self.static_mask.numel()
+        _log_message(f"  Mask: ACTNUM at ch {best_ch} — {n_act}/{n_tot} active ({100*n_act/n_tot:.1f}%)")
+
+    def get_static_mask(self):
+        """Return static spatial mask or None."""
+        return self.static_mask
+
     def _compute_normalization(self):
         """Compute normalization statistics (dimension-agnostic)."""
         if self.mode == "train":
@@ -364,6 +401,7 @@ def create_dataloaders(
     output_file: Optional[str] = None,
     variable: Optional[str] = None,
     expected_dimensions: Optional[str] = None,
+    use_mask: bool = False,
 ) -> Tuple[torch.utils.data.DataLoader, ...]:
     """
     Create train, validation, and test dataloaders.
@@ -435,6 +473,7 @@ def create_dataloaders(
         "variable": variable,
         "normalize": normalize,
         "expected_dimensions": expected_dimensions,
+        "use_mask": use_mask,
     }
     
     # Create datasets

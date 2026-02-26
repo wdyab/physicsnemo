@@ -201,6 +201,7 @@ def teacher_forcing_step(
     loss_fn,
     L: int,
     K: int,
+    spatial_mask: Optional[Tensor] = None,
 ) -> Tensor:
     """One teacher-forcing training iteration over a batch.
 
@@ -228,7 +229,7 @@ def teacher_forcing_step(
         actual_K = pred.shape[t_ax]
         y_target = slice_target_window(targets, t0 + L, actual_K)
 
-    return loss_fn(pred, y_target, x_window)
+    return loss_fn(pred, y_target, x_window, spatial_mask=spatial_mask)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +245,7 @@ def rollout_step(
     K: int,
     max_steps: int,
     use_checkpointing: bool = True,
+    spatial_mask: Optional[Tensor] = None,
 ) -> Tensor:
     """One rollout (free-running) training iteration.
 
@@ -294,7 +296,7 @@ def rollout_step(
     rollout_T = pred_cat.shape[t_ax]
     max_input_T = inputs.shape[_time_axis_input(inputs)] - t0
     input_for_loss = slice_input_window(inputs, t0, min(rollout_T, max_input_T))
-    return loss_fn(pred_cat, gt_cat, input_for_loss)
+    return loss_fn(pred_cat, gt_cat, input_for_loss, spatial_mask=spatial_mask)
 
 
 # ---------------------------------------------------------------------------

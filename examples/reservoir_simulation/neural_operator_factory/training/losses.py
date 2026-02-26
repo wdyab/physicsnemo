@@ -295,6 +295,7 @@ class UnifiedLoss(nn.Module):
         pred: torch.Tensor,
         target: torch.Tensor,
         inputs: torch.Tensor = None,
+        spatial_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """Compute unified loss.
 
@@ -319,6 +320,12 @@ class UnifiedLoss(nn.Module):
             )
 
         batch_size = pred.shape[0]
+
+        # Apply spatial_mask: zero out inactive cells before loss computation
+        if spatial_mask is not None:
+            mask_expanded = spatial_mask.unsqueeze(0).unsqueeze(-1).expand_as(pred)
+            pred = pred * mask_expanded
+            target = target * mask_expanded
 
         # --- Case 1: Masking enabled (vectorized implementation) ---
         if self.use_mask:
