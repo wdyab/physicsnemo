@@ -120,10 +120,10 @@ arch:
     
     # Trunk: Temporal/coordinate encoder
     trunk:
-      input_type: time        # 'time' (t only) - using time-only MLP as requested
+      input_type: time        # 'time' (t only)
       hidden_width: 128
-      num_layers: 4
-      activation_fn: sin
+      num_layers: 8
+      activation_fn: tanh
     
     # Decoder: Output projection
     decoder_type: mlp         # 'mlp' or 'conv'

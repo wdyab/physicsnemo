@@ -28,7 +28,7 @@ data:
   output_file: norne_{mode}_pressure.pt              # e.g., 'norne_{mode}_output.pt' for custom datasets
   
   normalize: true
-  num_workers: 0
+  num_workers: 2
 
   # ---------------------------------------------------------------------------
   # Validation Metric Configuration (dataset-agnostic)
@@ -60,7 +60,7 @@ training:
   #                  with two-phase training (teacher forcing then rollout).
   regime: autoregressive
 
-  batch_size: 1
+  batch_size: 2
   epochs: 200                   # used by full_mapping only; ignored by autoregressive
   initial_lr: 0.001
   checkpoint_freq: 100
@@ -75,14 +75,14 @@ training:
   autoregressive:
     input_window: 1            # L: number of context timesteps fed to model
     output_window: 3           # K: timesteps predicted per step (DeepONet: any K; xFNO: L+K >= 2*time_modes)
-    teacher_forcing_epochs: 150 # Phase 1: model sees ground-truth inputs (learns physics)
+    teacher_forcing_epochs: 100 # Phase 1: model sees ground-truth inputs (learns physics)
     rollout_epochs: 0         # Phase 2: model sees its own predictions (learns self-correction)
     max_rollout_steps: 4       # Max chained AR steps per iteration (rollout phase)
     gradient_checkpointing: true
 
 optimizer:
   type: adam
-  weight_decay: 0.0001
+  weight_decay: 0.001
   betas: [0.9, 0.999]
   eps: 1.0e-8
 

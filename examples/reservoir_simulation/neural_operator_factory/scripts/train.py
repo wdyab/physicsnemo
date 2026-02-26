@@ -27,7 +27,7 @@ import hydra
 from omegaconf import DictConfig
 from pathlib import Path
 import torch
-from torch.optim import Adam
+from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import StepLR, ExponentialLR
 from torch.cuda.amp import autocast, GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -258,6 +258,13 @@ def main(cfg: DictConfig) -> None:
     static_mask = train_loader.dataset.get_static_mask()
     if static_mask is not None:
         static_mask = static_mask.to(dist.device)
+
+    # Get output normalization stats for denormalizing validation metrics
+    output_mean, output_std = 0.0, 1.0
+    if cfg.data.normalize:
+        norm_stats = train_loader.dataset.get_normalization_stats()
+        output_mean = norm_stats[2].item()
+        output_std = norm_stats[3].item()
 
     # Detect MIONet scalar channels and recreate dataloaders with MIONet collate
     model_type_check = cfg.arch.model.lower()
@@ -543,11 +550,17 @@ def main(cfg: DictConfig) -> None:
         logger.info(loss_info)
 
     # Create optimizer and scheduler
-    optimizer = Adam(
-        model.parameters(),
+    opt_type = cfg.optimizer.get("type", "adam").lower()
+    opt_kwargs = dict(
         lr=cfg.training.initial_lr,
         weight_decay=cfg.optimizer.weight_decay,
+        betas=tuple(cfg.optimizer.betas),
+        eps=cfg.optimizer.eps,
     )
+    if opt_type == "adamw":
+        optimizer = AdamW(model.parameters(), **opt_kwargs)
+    else:
+        optimizer = Adam(model.parameters(), **opt_kwargs)
 
     # Create scheduler based on config type
     scheduler_type = cfg.scheduler.type.lower()
@@ -568,7 +581,7 @@ def main(cfg: DictConfig) -> None:
     # Print optimizer info (only on rank 0)
     if dist.rank == 0:
         logger.info(
-            f"Optimizer: Adam (lr={cfg.training.initial_lr}) | AMP: {cfg.training.use_amp}"
+            f"Optimizer: {opt_type.upper()} (lr={cfg.training.initial_lr}, wd={cfg.optimizer.weight_decay}) | AMP: {cfg.training.use_amp}"
         )
 
     # Setup MLFlow tracking if enabled
@@ -588,7 +601,7 @@ def main(cfg: DictConfig) -> None:
             "batch_size": cfg.training.batch_size,
             "epochs": cfg.training.epochs,
             "learning_rate": cfg.training.initial_lr,
-            "optimizer": "Adam",
+            "optimizer": opt_type,
             "train_loss": cfg.loss.base_loss_type,
             "loss_masking": use_mask,
             "loss_derivative": cfg.loss.use_derivative,
@@ -732,12 +745,14 @@ def main(cfg: DictConfig) -> None:
                             max_steps=ar_max_steps,
                             use_checkpointing=ar_checkpointing,
                             x_branch2=scalar_inputs,
+                            spatial_mask=static_mask,
                         )
                     else:
                         loss = teacher_forcing_step(
                             model, inputs, targets, loss_fn,
                             L=ar_L, K=ar_K,
                             x_branch2=scalar_inputs,
+                            spatial_mask=static_mask,
                         )
                 else:
                     # Full-mapping: single forward pass over entire trajectory
@@ -810,14 +825,18 @@ def main(cfg: DictConfig) -> None:
                             targets = targets.to(dist.device)
                             scalar_inputs = None
 
-                        # Forward pass with optional AMP
-                        if cfg.training.use_amp:
-                            with autocast():
-                                pred = model(inputs, x_branch2=scalar_inputs) if is_mionet else model(inputs)
-                                val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
+                        # Forward pass — match training regime
+                        if regime == "autoregressive":
+                            pred = ar_validate_full_rollout(
+                                model, inputs, targets,
+                                L=ar_L, K=ar_K, x_branch2=scalar_inputs,
+                            )
+                        elif is_mionet:
+                            pred = model(inputs, x_branch2=scalar_inputs)
                         else:
-                            pred = model(inputs, x_branch2=scalar_inputs) if is_mionet else model(inputs)
-                            val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
+                            pred = model(inputs)
+
+                        val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
 
                         # Aggregate validation loss across GPUs
                         if dist.world_size > 1:
@@ -830,31 +849,17 @@ def main(cfg: DictConfig) -> None:
                         else:
                             total_val_loss += val_loss.detach()
 
-                        # Calculate validation metric on rank 0 only (for logging)
+                        # Calculate validation metric on rank 0 only
                         if dist.rank == 0:
                             pred_cpu = pred.cpu().numpy()
                             targets_cpu = targets.cpu().numpy()
-                            inputs_cpu = inputs.cpu().numpy()
 
-                            # Optional denormalization (config-driven)
-                            denorm_name = cfg.data.get("denormalize_fn", None)
-                            if denorm_name and denorm_name in _DENORM_REGISTRY:
-                                denorm_fn = _DENORM_REGISTRY[denorm_name]
-                                pred_denorm = denorm_fn(pred_cpu)
-                                targets_denorm = denorm_fn(targets_cpu)
-                            else:
-                                pred_denorm = pred_cpu
-                                targets_denorm = targets_cpu
+                            # Denormalize to physical units
+                            pred_denorm = pred_cpu * output_std + output_mean
+                            targets_denorm = targets_cpu * output_std + output_mean
 
-                            # Resolve metric function from config
                             val_metric_choice = cfg.data.get("val_metric", "rmse")
-                            if val_metric_choice not in _METRIC_REGISTRY:
-                                raise ValueError(
-                                    f"Unknown val_metric '{val_metric_choice}'. "
-                                    f"Choices: {list(_METRIC_REGISTRY.keys())}"
-                                )
                             _, _, metric_fn = _METRIC_REGISTRY[val_metric_choice]
-
                             mask_np = static_mask.cpu().numpy() if static_mask is not None else None
 
                             for i in range(pred_denorm.shape[0]):
