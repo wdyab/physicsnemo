@@ -23,12 +23,12 @@ data:
   # File naming (supports {mode} placeholder for train/val/test)
   # Option 1: CO2 convention - set variable, leave input_file/output_file null
   # Option 2: Custom files - set input_file and output_file patterns
-  variable: saturation           # 'pressure' or 'saturation' (CO2 dataset)
+  variable: pressure           # 'pressure' or 'saturation' (CO2 dataset)
   input_file: norne_{mode}_input.pt               # e.g., 'norne_{mode}_input.pt' for custom datasets
   output_file: norne_{mode}_pressure.pt              # e.g., 'norne_{mode}_output.pt' for custom datasets
   
-  normalize: true
-  num_workers: 1
+  normalize: true               # z-score normalize inputs/outputs (true for pressure, false for saturation)
+  num_workers: 2
 
   # ---------------------------------------------------------------------------
   # Validation Metric Configuration (dataset-agnostic)
@@ -43,7 +43,7 @@ data:
   #   1) Auto-detects ACTNUM channel if present (any structured-grid dataset)
   #   2) Falls back to CO2 per-sample channel-0 mask (CO2 dataset only)
   #   3) Falls back to output-zeros mask (all other datasets)
-  mask_enabled: false
+  mask_enabled: true
 
   # denormalize_fn: Name of a denormalization function to apply to
   #   predictions and targets before computing validation metrics.
@@ -53,7 +53,7 @@ data:
 
 training:
   batch_size: 2
-  epochs: 200                   # used by full_mapping only; ignored by autoregressive
+  epochs: 100                   # used by full_mapping only; ignored by autoregressive
   initial_lr: 0.001
   checkpoint_freq: 10
   checkpoint_dir: ./checkpoints
@@ -74,8 +74,8 @@ training:
   autoregressive:
     input_window: 1            # L: number of context timesteps fed to model
     output_window: 3           # K: timesteps predicted per step (DeepONet: any K; xFNO: L+K >= 2*time_modes)
-    teacher_forcing_epochs: 500 # Phase 1: model sees ground-truth inputs (learns physics)
-    rollout_epochs: 200         # Phase 2: model sees its own predictions (learns self-correction)
+    teacher_forcing_epochs: 100 # Phase 1: model sees ground-truth inputs (learns physics)
+    rollout_epochs: 0         # Phase 2: model sees its own predictions (learns self-correction)
     max_rollout_steps: 4       # Max chained AR steps per iteration (rollout phase)
     gradient_checkpointing: true
 
