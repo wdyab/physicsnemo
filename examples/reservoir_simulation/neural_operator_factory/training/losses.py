@@ -149,7 +149,6 @@ class UnifiedLoss(nn.Module):
     def __init__(
         self,
         base_loss_type: str = "relative_l2",
-        use_mask: bool = False,
         use_derivative: bool = False,
         derivative_weight: float = 0.5,
         derivative_dim="dx",
@@ -187,7 +186,6 @@ class UnifiedLoss(nn.Module):
                 )
 
         self.base_loss_type = base_loss_type
-        self.use_mask = use_mask
         self.use_derivative = use_derivative
         self.derivative_weight = derivative_weight
         self.derivative_dims = derivative_dims
@@ -315,9 +313,9 @@ class UnifiedLoss(nn.Module):
             Loss value
         """
         # Validate inputs
-        if (self.use_mask or self.use_derivative) and inputs is None:
+        if self.use_derivative and inputs is None:
             raise ValueError(
-                "inputs must be provided when use_mask=True or use_derivative=True"
+                "inputs must be provided when use_derivative=True"
             )
 
         batch_size = pred.shape[0]
@@ -328,8 +326,8 @@ class UnifiedLoss(nn.Module):
             pred = pred * mask_expanded
             target = target * mask_expanded
 
-        # --- Case 1: Masking enabled (vectorized implementation) ---
-        if self.use_mask:
+        # --- Case 1: Legacy CO2 mask (removed — use spatial_mask param instead) ---
+        if False:  # Dead code preserved for reference
             # Create mask from inputs: non-zero locations at first channel and first timestep
             # inputs shape: (B, H, W, T, C)
             mask = (inputs[:, :, :, 0:1, 0] != 0).repeat(
@@ -425,7 +423,6 @@ def get_loss_function(loss_config):
     loss_config : DictConfig or dict
         Loss configuration with fields:
         - base_loss_type: str, base loss ('mse', 'l1', 'relative_l2', 'simple_relative_l2')
-        - use_mask: bool, whether to use masking
         - use_derivative: bool, whether to add derivative term
         - derivative_weight: float, weight for derivative
         - derivative_dim: str or list, dimension(s) for derivatives ('dx', 'dz', or ['dx', 'dz'])
@@ -454,7 +451,6 @@ def get_loss_function(loss_config):
     # Otherwise use UnifiedLoss
     return UnifiedLoss(
         base_loss_type=loss_type,
-        use_mask=loss_config.get("use_mask", False),
         use_derivative=loss_config.get("use_derivative", False),
         derivative_weight=loss_config.get("derivative_weight", 0.5),
         derivative_dim=loss_config.get("derivative_dim", "dx"),
