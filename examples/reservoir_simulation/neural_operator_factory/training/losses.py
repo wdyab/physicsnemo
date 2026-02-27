@@ -146,9 +146,12 @@ class UnifiedLoss(nn.Module):
     https://www.sciencedirect.com/science/article/pii/S0309170822000562
     """
 
+    VALID_TYPES = {"mse", "l1", "relative_l2"}
+
     def __init__(
         self,
-        base_loss_type: str = "relative_l2",
+        types=None,
+        weights=None,
         use_derivative: bool = False,
         derivative_weight: float = 0.5,
         derivative_dim="dx",
@@ -157,12 +160,29 @@ class UnifiedLoss(nn.Module):
     ):
         super().__init__()
 
-        base_loss_type = base_loss_type.lower()
-        # Validate parameters
-        if base_loss_type not in ["mse", "l1", "relative_l2"]:
+        # Default to single relative_l2
+        if types is None:
+            types = ["relative_l2"]
+        if isinstance(types, str):
+            types = [types]
+        types = [t.lower() for t in types]
+
+        if weights is None:
+            weights = [1.0] * len(types)
+        if isinstance(weights, (int, float)):
+            weights = [float(weights)]
+        weights = [float(w) for w in weights]
+
+        if len(types) != len(weights):
             raise ValueError(
-                f"base_loss_type must be 'mse', 'l1', or 'relative_l2', got {base_loss_type}"
+                f"types and weights must have same length, got {len(types)} vs {len(weights)}"
             )
+
+        for t in types:
+            if t not in self.VALID_TYPES:
+                raise ValueError(
+                    f"Loss type must be one of {self.VALID_TYPES}, got '{t}'"
+                )
         if reduction not in ["mean", "sum", "none"]:
             raise ValueError(
                 f"reduction must be 'mean', 'sum', or 'none', got {reduction}"
@@ -185,7 +205,8 @@ class UnifiedLoss(nn.Module):
                     f"derivative_dim values must be 'dx' or 'dz', got {dim}"
                 )
 
-        self.base_loss_type = base_loss_type
+        self.loss_types = types
+        self.loss_weights = weights
         self.use_derivative = use_derivative
         self.derivative_weight = derivative_weight
         self.derivative_dims = derivative_dims
@@ -195,49 +216,36 @@ class UnifiedLoss(nn.Module):
         # Grid spacings (extracted from data)
         self.grid_spacings = {}
 
-    def _compute_base_loss(
-        self, pred: torch.Tensor, target: torch.Tensor
+    def _compute_single_loss(
+        self, pred: torch.Tensor, target: torch.Tensor, loss_type: str
     ) -> torch.Tensor:
-        """Compute base loss (MSE, L1, or Relative L2).
-
-        Parameters
-        ----------
-        pred : torch.Tensor
-            Predicted values
-        target : torch.Tensor
-            Target values
-
-        Returns
-        -------
-        torch.Tensor
-            Loss value
-        """
-        if self.base_loss_type == "mse":
-            # Mean Squared Error
+        """Compute a single loss term."""
+        if loss_type == "mse":
             loss = (pred - target) ** 2
-
-        elif self.base_loss_type == "l1":
-            # Mean Absolute Error
+        elif loss_type == "l1":
             loss = torch.abs(pred - target)
-
-        elif self.base_loss_type == "relative_l2":
-            # Relative L2: ||pred - target||_2 / ||target||_2
+        elif loss_type == "relative_l2":
             batch_size = pred.shape[0]
             pred_flat = pred.reshape(batch_size, -1)
             target_flat = target.reshape(batch_size, -1)
-
             diff_norm = torch.norm(pred_flat - target_flat, p=2, dim=1)
             target_norm = torch.norm(target_flat, p=2, dim=1)
-
             loss = diff_norm / target_norm
 
-        # Apply reduction
         if self.reduction == "mean":
             return loss.mean()
         elif self.reduction == "sum":
             return loss.sum()
-        else:  # 'none'
-            return loss
+        return loss
+
+    def _compute_base_loss(
+        self, pred: torch.Tensor, target: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute weighted sum of all base loss terms."""
+        total = torch.tensor(0.0, device=pred.device)
+        for loss_type, weight in zip(self.loss_types, self.loss_weights):
+            total = total + weight * self._compute_single_loss(pred, target, loss_type)
+        return total
 
     def _extract_grid_spacing(self, inputs: torch.Tensor) -> torch.Tensor:
         """Extract grid spacing from input data.
@@ -369,7 +377,7 @@ class UnifiedLoss(nn.Module):
                 mask_dy = mask[:, :, : dy_pred.shape[2], :]  # (B, H, W-2, T)
 
                 # Vectorized derivative loss computation (optimized)
-                if self.base_loss_type == "relative_l2":
+                if "relative_l2" in self.loss_types:
                     der_loss_per_sample = [
                         torch.norm(
                             dy_pred[i][mask_dy[i]] - dy_target[i][mask_dy[i]], p=2
@@ -379,11 +387,11 @@ class UnifiedLoss(nn.Module):
                     ]
                     der_loss = torch.stack(der_loss_per_sample).mean()
 
-                elif self.base_loss_type == "mse":
+                elif "mse" in self.loss_types:
                     diff = (dy_pred - dy_target) ** 2
                     der_loss = (diff * mask_dy.float()).sum() / mask_dy.float().sum()
 
-                elif self.base_loss_type == "l1":
+                elif "l1" in self.loss_types:
                     diff = torch.abs(dy_pred - dy_target)
                     der_loss = (diff * mask_dy.float()).sum() / mask_dy.float().sum()
 
@@ -406,7 +414,7 @@ class UnifiedLoss(nn.Module):
                 dy_target = self._compute_derivative(target, grid_dx)
 
                 # Compute derivative loss
-                der_loss = self._compute_base_loss(dy_pred, dy_target)
+                der_loss = self._compute_single_loss(dy_pred, dy_target, self.loss_types[0])
 
                 total_loss = data_loss + self.derivative_weight * der_loss
             else:
@@ -422,35 +430,30 @@ def get_loss_function(loss_config):
     ----------
     loss_config : DictConfig or dict
         Loss configuration with fields:
-        - base_loss_type: str, base loss ('mse', 'l1', 'relative_l2', 'simple_relative_l2')
-        - use_derivative: bool, whether to add derivative term
-        - derivative_weight: float, weight for derivative
-        - derivative_dim: str or list, dimension(s) for derivatives ('dx', 'dz', or ['dx', 'dz'])
-        - eps: float, epsilon for relative_l2
-        - reduction: str, reduction method
+        - types: list of str, loss types (e.g. ['l1', 'mse'])
+        - weights: list of float, corresponding weights
+        - use_derivative: bool, CO2-only derivative regularization
+        - derivative_weight: float, weight for derivative term
+        - derivative_dim: str or list, direction(s) for derivatives
+        - reduction: str, reduction method ('mean', 'sum', 'none')
 
     Returns
     -------
-    UnifiedLoss or SimpleRelativeL2Loss
+    UnifiedLoss
         Configured loss function
-
-    Example
-    -------
-    >>> from omegaconf import DictConfig
-    >>> cfg = DictConfig({
-    ...     'base_loss_type': 'simple_relative_l2',
-    ... })
-    >>> loss_fn = get_loss_function(cfg)
     """
-    loss_type = loss_config.get("base_loss_type", "relative_l2")
+    types = loss_config.get("types", ["relative_l2"])
+    weights = loss_config.get("weights", None)
 
-    # Use simple loss if requested
-    if loss_type == "simple_relative_l2":
-        return SimpleRelativeL2Loss()
+    # Convert OmegaConf lists to Python lists
+    if hasattr(types, "__iter__") and not isinstance(types, str):
+        types = list(types)
+    if weights is not None and hasattr(weights, "__iter__"):
+        weights = list(weights)
 
-    # Otherwise use UnifiedLoss
     return UnifiedLoss(
-        base_loss_type=loss_type,
+        types=types,
+        weights=weights,
         use_derivative=loss_config.get("use_derivative", False),
         derivative_weight=loss_config.get("derivative_weight", 0.5),
         derivative_dim=loss_config.get("derivative_dim", "dx"),

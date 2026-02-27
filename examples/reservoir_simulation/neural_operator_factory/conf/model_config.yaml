@@ -137,8 +137,10 @@ arch:
 # Loss Function Configuration
 # =============================================================================
 loss:
-  # Available losses (any dataset): mse, l1, relative_l2, simple_relative_l2
-  base_loss_type: L1
+  # Available losses (any dataset): mse, l1, relative_l2
+  # Specify one or more losses with corresponding weights.
+  types: [l1]
+  weights: [1.0]
   reduction: mean
 
   # Derivative regularization (CO2 dataset only — hardcoded for 2D spatial grid)

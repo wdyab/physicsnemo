@@ -462,20 +462,14 @@ def main(cfg: DictConfig) -> None:
     # Create validation loss function (same as training loss for fair comparison)
     from omegaconf import DictConfig
 
-    if cfg.loss.base_loss_type == "simple_relative_l2":
-        # Use same simple loss for validation
-        val_loss_fn = loss_fn
-    else:
-        # Use UnifiedLoss with same masking but no derivatives for validation
-        val_loss_cfg = DictConfig(
-            {
-                "base_loss_type": cfg.loss.base_loss_type,
-                "use_mask": False,  # Masking handled via spatial_mask param
-                "use_derivative": False,  # No derivatives in validation
-                "reduction": cfg.loss.get("reduction", "sum"),
-            }
-        )
-        val_loss_fn = get_loss_function(val_loss_cfg)
+    # Validation loss: same base losses, no derivatives
+    val_loss_cfg = DictConfig({
+        "types": list(cfg.loss.types),
+        "weights": list(cfg.loss.weights),
+        "use_derivative": False,
+        "reduction": cfg.loss.get("reduction", "mean"),
+    })
+    val_loss_fn = get_loss_function(val_loss_cfg)
 
     # Print loss info (only on rank 0)
     if dist.rank == 0:
@@ -535,9 +529,9 @@ def main(cfg: DictConfig) -> None:
             "epochs": cfg.training.epochs,
             "learning_rate": cfg.training.initial_lr,
             "optimizer": "Adam",
-            "train_loss": cfg.loss.base_loss_type,
+            "train_loss": "+".join(list(cfg.loss.types)),
             "loss_masking": cfg.data.get("mask_enabled", False),
-            "loss_derivative": cfg.loss.use_derivative,
+            "loss_derivative": cfg.loss.get("use_derivative", False),
             "use_amp": cfg.training.use_amp,
             "use_graphs": cfg.training.use_graphs,
             "variable": cfg.data.variable,
