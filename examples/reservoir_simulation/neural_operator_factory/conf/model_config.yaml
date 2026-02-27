@@ -127,7 +127,7 @@ arch:
     
     # Decoder: Output projection
     decoder_type: mlp         # 'mlp' or 'conv'
-    decoder_width: 128
+    decoder_width: 64
     decoder_layers: 2
     decoder_activation_fn: relu
 
