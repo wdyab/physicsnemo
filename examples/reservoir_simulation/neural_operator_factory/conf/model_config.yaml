@@ -137,8 +137,11 @@ arch:
 # Loss Function Configuration
 # =============================================================================
 loss:
-  base_loss_type: L1   # 'mse', 'l1', 'relative_l2', 'relative_l1', 'huber'
+  # Available losses (any dataset): mse, l1, relative_l2, simple_relative_l2
+  base_loss_type: L1
   reduction: mean
-  use_derivative: false          # Enable derivative loss as requested
-  derivative_weight: 0.5        # Weight for derivative term
-  derivative_dim: dx            # Direction for derivative (dx, dy, dt)
+
+  # Derivative regularization (CO2 dataset only — hardcoded for 2D spatial grid)
+  use_derivative: false
+  derivative_weight: 0.5
+  derivative_dim: dx              # 'dx' or 'dz' (CO2 spatial directions)
