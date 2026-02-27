@@ -511,8 +511,12 @@ def create_dataloaders(
         
         if is_distributed:
             import torch.distributed as dist_torch
+            gpu_stats = []
             for stat in norm_stats:
-                dist_torch.broadcast(stat, src=0)
+                s = stat.cuda()
+                dist_torch.broadcast(s, src=0)
+                gpu_stats.append(s.cpu())
+            norm_stats = tuple(gpu_stats)
         
         val_dataset.set_normalization(*norm_stats)
         test_dataset.set_normalization(*norm_stats)
