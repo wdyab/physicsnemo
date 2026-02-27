@@ -158,6 +158,7 @@ class UnifiedLoss(nn.Module):
     ):
         super().__init__()
 
+        base_loss_type = base_loss_type.lower()
         # Validate parameters
         if base_loss_type not in ["mse", "l1", "relative_l2"]:
             raise ValueError(
