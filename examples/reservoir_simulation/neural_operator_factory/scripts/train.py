@@ -473,13 +473,10 @@ def main(cfg: DictConfig) -> None:
 
     # Print loss info (only on rank 0)
     if dist.rank == 0:
-        if cfg.loss.base_loss_type == "simple_relative_l2":
-            loss_info = f"Train Loss: SIMPLE_RELATIVE_L2 (no mask, no derivatives) | Val Loss: SIMPLE_RELATIVE_L2"
-        else:
-            loss_info = f"Train Loss: {cfg.loss.base_loss_type.upper()} | Val Loss: {cfg.loss.base_loss_type.upper()}"
-            if cfg.loss.use_derivative:
-                loss_info += f" (+Derivative w={cfg.loss.derivative_weight})"
-
+        types_str = "+".join(f"{w}*{t}" for t, w in zip(cfg.loss.types, cfg.loss.weights))
+        loss_info = f"Train Loss: {types_str}"
+        if cfg.loss.get("use_derivative", False):
+            loss_info += f" (+Derivative w={cfg.loss.derivative_weight})"
         logger.info(loss_info)
 
     # Create optimizer and scheduler
