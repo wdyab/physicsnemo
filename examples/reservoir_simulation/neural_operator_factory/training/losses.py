@@ -85,65 +85,38 @@ class UnifiedLoss(nn.Module):
     This flexible loss function supports:
     1. Multiple base losses (MSE, L1, Relative L2)
     2. Optional masking for irregular domains
-    3. Optional physics-informed derivative constraints
+    3. Optional physics-informed derivative constraints (CO2 dataset only)
 
     Formula:
-        If use_derivative=False:
-            loss = base_loss(pred, target)
-
-        If use_derivative=True:
-            loss = base_loss(pred, target) + derivative_weight * base_loss(∂pred, ∂target)
-
-    where derivatives are computed using central finite differences with adaptive grid spacing.
+        loss = sum(w_i * loss_i(pred, target)) [+ derivative_weight * derivative_loss]
 
     Parameters
     ----------
-    base_loss_type : str
-        Base loss function: 'mse', 'l1', or 'relative_l2'
-    use_mask : bool, optional
-        Whether to apply masking for irregular domains, by default False
+    types : list of str
+        Loss types to combine: 'mse', 'l1', 'relative_l2'
+    weights : list of float
+        Corresponding weights for each loss type
     use_derivative : bool, optional
-        Whether to add derivative (physics-informed) term, by default False
+        Add derivative regularization (CO2 dataset only), by default False
     derivative_weight : float, optional
-        Weight for derivative term (only used if use_derivative=True), by default 0.5
+        Weight for derivative term, by default 0.5
     derivative_dim : str or list of str, optional
-        Dimension(s) for derivative: 'dz' (height/z-direction), 'dx' (width/x-direction),
-        or ['dx', 'dz'] for both, by default 'dx'
+        Direction(s) for derivative: 'dx', 'dz', or ['dx', 'dz'], by default 'dx'
     eps : float, optional
-        Epsilon for numerical stability (relative_l2 only), by default 1e-6
+        Epsilon for numerical stability, by default 1e-6
     reduction : str, optional
         Reduction method: 'mean', 'sum', or 'none', by default 'mean'
 
     Example
     -------
-    >>> # Baseline: Pure Relative L2
-    >>> loss_fn = UnifiedLoss(base_loss_type='relative_l2', use_mask=False, use_derivative=False)
-    >>> loss = loss_fn(pred, target)
-
-    >>> # With masking: Relative L2 on active regions only
-    >>> loss_fn = UnifiedLoss(base_loss_type='relative_l2', use_mask=True, use_derivative=False)
-    >>> loss = loss_fn(pred, target, inputs)
-
-    >>> # Physics-informed: Relative L2 + derivatives in x-direction
-    >>> loss_fn = UnifiedLoss(base_loss_type='relative_l2', use_mask=True, use_derivative=True,
-    ...                       derivative_weight=0.5, derivative_dim='dx')
-    >>> loss = loss_fn(pred, target, inputs)
-
-    >>> # Physics-informed with both x and z derivatives
-    >>> loss_fn = UnifiedLoss(base_loss_type='relative_l2', use_derivative=True,
-    ...                       derivative_weight=0.5, derivative_dim=['dx', 'dz'])
-    >>> loss = loss_fn(pred, target, inputs)
+    >>> loss_fn = UnifiedLoss(types=['l1'], weights=[1.0])
+    >>> loss_fn = UnifiedLoss(types=['l1', 'mse'], weights=[1.0, 0.5])
+    >>> loss_fn = UnifiedLoss(types=['relative_l2'], weights=[1.0], use_derivative=True)
 
     Note
     ----
-    - If use_mask=True or use_derivative=True, inputs must be provided in forward()
-    - Masking uses first channel at first time step: (inputs[:, 0, :, :, 0] != 0)
-    - Derivative grid spacing is extracted from inputs[:, 0, :, 0, -3]
-
-    Reference
-    ---------
-    Based on U-FNO paper: Wen, G., et al. "U-FNO" (2022)
-    https://www.sciencedirect.com/science/article/pii/S0309170822000562
+    - Spatial masking is via the spatial_mask parameter in forward(), not a constructor arg
+    - Derivative features are CO2-specific (hardcoded 2D spatial grid spacing extraction)
     """
 
     VALID_TYPES = {"mse", "l1", "relative_l2"}
@@ -334,93 +307,18 @@ class UnifiedLoss(nn.Module):
             pred = pred * mask_expanded
             target = target * mask_expanded
 
-        # --- Case 1: Legacy CO2 mask (removed — use spatial_mask param instead) ---
-        if False:  # Dead code preserved for reference
-            # Create mask from inputs: non-zero locations at first channel and first timestep
-            # inputs shape: (B, H, W, T, C)
-            mask = (inputs[:, :, :, 0:1, 0] != 0).repeat(
-                1, 1, 1, pred.shape[3]
-            )  # (B, H, W, T)
+        # Compute base loss (weighted sum of all loss terms)
+        data_loss = self._compute_base_loss(pred, target)
 
-            # Vectorized masked loss computation
-            if self.base_loss_type == "relative_l2":
-                # Compute relative L2 loss per sample with masking (optimized)
-                # pred, target, mask: (B, H, W, T)
-                # Use list comprehension for faster iteration
-                ori_loss_per_sample = [
-                    torch.norm(pred[i][mask[i]] - target[i][mask[i]], p=2)
-                    / torch.norm(target[i][mask[i]], p=2)
-                    for i in range(batch_size)
-                ]
-                ori_loss = torch.stack(ori_loss_per_sample).mean()  # Mean across batch
+        # Add derivative loss if enabled (CO2 dataset only)
+        if self.use_derivative:
+            grid_dx = self._extract_grid_spacing(inputs).to(pred.device)
+            dy_pred = self._compute_derivative(pred, grid_dx)
+            dy_target = self._compute_derivative(target, grid_dx)
+            der_loss = self._compute_single_loss(dy_pred, dy_target, self.loss_types[0])
+            return data_loss + self.derivative_weight * der_loss
 
-            elif self.base_loss_type == "mse":
-                # MSE with masking - can be fully vectorized
-                diff = (pred - target) ** 2
-                ori_loss = (diff * mask.float()).sum() / mask.float().sum()
-
-            elif self.base_loss_type == "l1":
-                # L1 with masking - can be fully vectorized
-                diff = torch.abs(pred - target)
-                ori_loss = (diff * mask.float()).sum() / mask.float().sum()
-
-            # Add derivative loss if enabled
-            if self.use_derivative:
-                # Extract grid spacing
-                grid_dx = self._extract_grid_spacing(inputs).to(pred.device)
-
-                # Compute derivatives: dy = (y[:,:,2:,:] - y[:,:,:-2,:])/grid_dx
-                dy_pred = self._compute_derivative(pred, grid_dx)  # (B, H, W-2, T)
-                dy_target = self._compute_derivative(target, grid_dx)  # (B, H, W-2, T)
-
-                # Adjust mask for derivative (width dimension reduced by 2)
-                mask_dy = mask[:, :, : dy_pred.shape[2], :]  # (B, H, W-2, T)
-
-                # Vectorized derivative loss computation (optimized)
-                if "relative_l2" in self.loss_types:
-                    der_loss_per_sample = [
-                        torch.norm(
-                            dy_pred[i][mask_dy[i]] - dy_target[i][mask_dy[i]], p=2
-                        )
-                        / torch.norm(dy_target[i][mask_dy[i]], p=2)
-                        for i in range(batch_size)
-                    ]
-                    der_loss = torch.stack(der_loss_per_sample).mean()
-
-                elif "mse" in self.loss_types:
-                    diff = (dy_pred - dy_target) ** 2
-                    der_loss = (diff * mask_dy.float()).sum() / mask_dy.float().sum()
-
-                elif "l1" in self.loss_types:
-                    diff = torch.abs(dy_pred - dy_target)
-                    der_loss = (diff * mask_dy.float()).sum() / mask_dy.float().sum()
-
-                total_loss = ori_loss + self.derivative_weight * der_loss
-            else:
-                total_loss = ori_loss
-
-        # --- Case 2: No masking ---
-        else:
-            # Compute data loss on full fields
-            data_loss = self._compute_base_loss(pred, target)
-
-            # Add derivative loss if enabled
-            if self.use_derivative:
-                # Extract grid spacing
-                grid_dx = self._extract_grid_spacing(inputs).to(pred.device)
-
-                # Compute derivatives
-                dy_pred = self._compute_derivative(pred, grid_dx)
-                dy_target = self._compute_derivative(target, grid_dx)
-
-                # Compute derivative loss
-                der_loss = self._compute_single_loss(dy_pred, dy_target, self.loss_types[0])
-
-                total_loss = data_loss + self.derivative_weight * der_loss
-            else:
-                total_loss = data_loss
-
-        return total_loss
+        return data_loss
 
 
 def get_loss_function(loss_config):
