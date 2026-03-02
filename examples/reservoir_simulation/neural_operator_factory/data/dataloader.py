@@ -333,6 +333,10 @@ class ReservoirDataset(Dataset):
             self.input_std = torch.where(
                 self.input_std > 1e-6, self.input_std, torch.ones_like(self.input_std)
             )
+
+            # Preserve time channel (last channel) — already in [0,1], skip z-score
+            self.input_mean[..., -1] = 0.0
+            self.input_std[..., -1] = 1.0
             if self.output_std < 1e-6:
                 self.output_std = torch.tensor(1.0)
             
