@@ -301,7 +301,7 @@ class DeepONet(Module):
         )
     
     def _build_branch(self, config: dict, width: int) -> nn.Module:
-        branch_type = config.get('type', 'spatial')
+        branch_type = config.get('encoder', 'spatial')
         activation = config.get('activation_fn', 'sin')
         
         if branch_type == 'mlp':
@@ -667,7 +667,7 @@ class DeepONet3D(Module):
         )
     
     def _build_branch(self, config: dict, width: int) -> nn.Module:
-        branch_type = config.get('type', 'spatial')
+        branch_type = config.get('encoder', 'spatial')
         activation = config.get('activation_fn', 'sin')
         
         if branch_type == 'mlp':

@@ -63,7 +63,7 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
         # Branch configuration
         branch1_cfg = cfg.arch.xdeeponet.get("branch1", {})
         logger.info(f"Branch 1:")
-        logger.info(f"  Type: {branch1_cfg.get('type', 'spatial')}")
+        logger.info(f"  Type: {branch1_cfg.get('encoder', 'spatial')}")
         logger.info(f"  In Channels: auto (inferred from input tensor)")
         logger.info(f"  Fourier Layers: {branch1_cfg.get('num_fourier_layers', 0)}")
         logger.info(f"  UNet Layers: {branch1_cfg.get('num_unet_layers', 0)}")
@@ -73,7 +73,7 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
         if variant in ['mionet', 'fourier_mionet']:
             branch2_cfg = cfg.arch.xdeeponet.get("branch2", {})
             logger.info(f"Branch 2:")
-            logger.info(f"  Type: {branch2_cfg.get('type', 'mlp')}")
+            logger.info(f"  Type: {branch2_cfg.get('encoder', 'mlp')}")
             logger.info(f"  In Features: auto (inferred from input)")
             logger.info(f"  Activation: {branch2_cfg.get('activation_fn', 'relu')}")
         
@@ -381,7 +381,7 @@ def main(cfg: DictConfig) -> None:
             # 4D DeepONet (3D spatial + time)
             logger.info(
                 f"Creating DeepONet3D model (variant: {variant}, "
-                f"branch1: {branch1_config.get('type', 'spatial')}, width: {xdeeponet_cfg.width})"
+                f"branch1: {branch1_config.get('encoder', 'spatial')}, width: {xdeeponet_cfg.width})"
             )
             model = DeepONet3DWrapper(
                 padding=xdeeponet_cfg.padding,
@@ -395,12 +395,12 @@ def main(cfg: DictConfig) -> None:
                 decoder_layers=xdeeponet_cfg.decoder_layers,
                 decoder_activation_fn=xdeeponet_cfg.get("decoder_activation_fn", "relu"),
             ).to(dist.device)
-            model_arch_name = f"deeponet3d_{variant}_{branch1_config.get('type', 'spatial')}"
+            model_arch_name = f"deeponet3d_{variant}_{branch1_config.get('encoder', 'spatial')}"
         else:
             # 3D DeepONet (2D spatial + time)
             logger.info(
                 f"Creating DeepONet model (variant: {variant}, "
-                f"branch1: {branch1_config.get('type', 'spatial')}, width: {xdeeponet_cfg.width})"
+                f"branch1: {branch1_config.get('encoder', 'spatial')}, width: {xdeeponet_cfg.width})"
             )
             model = DeepONetWrapper(
                 padding=xdeeponet_cfg.padding,
@@ -414,7 +414,7 @@ def main(cfg: DictConfig) -> None:
                 decoder_layers=xdeeponet_cfg.decoder_layers,
                 decoder_activation_fn=xdeeponet_cfg.get("decoder_activation_fn", "relu"),
             ).to(dist.device)
-            model_arch_name = f"deeponet_{variant}_{branch1_config.get('type', 'spatial')}"
+            model_arch_name = f"deeponet_{variant}_{branch1_config.get('encoder', 'spatial')}"
 
     else:
         raise ValueError(f"Unknown model: {model_type}. Use 'xfno' or 'xdeeponet'.")
