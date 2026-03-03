@@ -91,6 +91,7 @@ arch:
   #   - hybrid_deeponet: Fourier + UNet + Conv combination
   #   - mionet: Two-branch architecture
   #   - fourier_mionet: Two-branch with Fourier layers
+  #   - tno: Temporal Neural Operator (branch2 = previous solution, AR only)
   xdeeponet:
     variant: u_deeponet
     width: 128
@@ -110,7 +111,7 @@ arch:
       unet_impl: physicsnemo       # 'custom' or 'physicsnemo'
       activation_fn: tanh
     
-    # Branch 2: Secondary encoder (for mionet/fourier_mionet only)
+    # Branch 2: Secondary encoder (for mionet/fourier_mionet/tno)
     # Supports same options as branch1. Use mlp for scalar inputs, spatial for fields.
     branch2:
       encoder: mlp              # 'spatial' (convolutional) or 'mlp' (flat)

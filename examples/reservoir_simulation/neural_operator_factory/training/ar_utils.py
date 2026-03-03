@@ -158,27 +158,26 @@ def _call_model(
     x_window: Tensor,
     target_times: Optional[Tensor],
     use_checkpointing: bool = False,
+    x_branch2: Optional[Tensor] = None,
 ) -> Tensor:
-    """Call the model, optionally passing target_times (for DeepONet) and
-    optionally using gradient checkpointing."""
-    has_target_times = target_times is not None and _model_accepts_target_times(model)
+    """Call the model, optionally passing target_times and x_branch2."""
+    kwargs = {}
+    if target_times is not None and _model_accepts_target_times(model):
+        kwargs["target_times"] = target_times
+    if x_branch2 is not None:
+        kwargs["x_branch2"] = x_branch2
 
     if use_checkpointing and model.training:
-        if has_target_times:
-            return grad_checkpoint(
-                _forward_with_times, model, x_window, target_times,
-                use_reentrant=False,
-            )
-        return grad_checkpoint(model, x_window, use_reentrant=False)
-
-    if has_target_times:
-        return model(x_window, target_times=target_times)
-    return model(x_window)
+        return grad_checkpoint(
+            _forward_with_kwargs, model, x_window, kwargs,
+            use_reentrant=False,
+        )
+    return model(x_window, **kwargs)
 
 
-def _forward_with_times(model, x_window, target_times):
-    """Thin wrapper so ``grad_checkpoint`` can pass target_times."""
-    return model(x_window, target_times=target_times)
+def _forward_with_kwargs(model, x_window, kwargs):
+    """Thin wrapper so ``grad_checkpoint`` can pass kwargs."""
+    return model(x_window, **kwargs)
 
 
 def _model_accepts_target_times(model) -> bool:
@@ -202,16 +201,15 @@ def teacher_forcing_step(
     L: int,
     K: int,
     spatial_mask: Optional[Tensor] = None,
+    is_tno: bool = False,
 ) -> Tensor:
     """One teacher-forcing training iteration over a batch.
 
     Samples a **single random window** from the trajectory, runs one forward
-    pass, and returns the loss.  Using one window per call keeps only one
-    forward graph in GPU memory at a time.
+    pass, and returns the loss.
 
-    For models that accept ``target_times`` (DeepONet), the K target time
-    coordinates are extracted from the full input tensor and passed to the
-    trunk, enabling K != L temporal bundling.
+    When is_tno=True, branch2 receives the ground-truth solution at [t0, t0+L)
+    as a spatial field — the Temporal Neural Operator pattern.
     """
     total_T = targets.shape[_time_axis_target(targets)]
     t0 = sample_start_index(total_T, L, K, num_steps=1)
@@ -220,7 +218,8 @@ def teacher_forcing_step(
     y_target = slice_target_window(targets, t0 + L, K)
     target_times = extract_target_times(inputs, t0 + L, K)
 
-    pred = _call_model(model, x_window, target_times)
+    y_branch2 = slice_target_window(targets, t0, L) if is_tno else None
+    pred = _call_model(model, x_window, target_times, x_branch2=y_branch2)
     t_ax = _time_axis_target(pred)
 
     if pred.shape[t_ax] > K:
@@ -246,12 +245,12 @@ def rollout_step(
     max_steps: int,
     use_checkpointing: bool = True,
     spatial_mask: Optional[Tensor] = None,
+    is_tno: bool = False,
 ) -> Tensor:
     """One rollout (free-running) training iteration.
 
-    Samples a random starting point, chains up to ``max_steps`` AR steps
-    (feeding predictions back), and computes loss over the full predicted
-    window vs ground truth.
+    Samples a random starting point, chains up to ``max_steps`` AR steps.
+    When is_tno=True, feeds predictions back as branch2 input (TNO pattern).
     """
     total_T = targets.shape[_time_axis_target(targets)]
 
@@ -263,6 +262,7 @@ def rollout_step(
 
     preds = []
     gt_slices = []
+    prev_pred = None
     current_t = t0
 
     for step in range(effective_steps):
@@ -275,7 +275,21 @@ def rollout_step(
         x_window = slice_input_window(inputs, current_t, L)
         target_times = extract_target_times(inputs, target_start, actual_K)
 
-        pred = _call_model(model, x_window, target_times, use_checkpointing)
+        # TNO: construct branch2 from previous solution
+        if is_tno:
+            t_ax = _time_axis_target(targets)
+            if prev_pred is None:
+                y_branch2 = slice_target_window(targets, current_t, L)
+            elif prev_pred.shape[t_ax] >= L:
+                y_branch2 = prev_pred.narrow(t_ax, prev_pred.shape[t_ax] - L, L)
+            else:
+                need = L - prev_pred.shape[t_ax]
+                gt_part = slice_target_window(targets, current_t, need)
+                y_branch2 = torch.cat([gt_part, prev_pred], dim=t_ax)
+        else:
+            y_branch2 = None
+
+        pred = _call_model(model, x_window, target_times, use_checkpointing, x_branch2=y_branch2)
 
         t_ax = _time_axis_target(pred)
         if pred.shape[t_ax] > actual_K:
@@ -283,6 +297,7 @@ def rollout_step(
 
         preds.append(pred)
         gt_slices.append(slice_target_window(targets, target_start, actual_K))
+        prev_pred = pred
 
         current_t += K
 
@@ -310,16 +325,19 @@ def ar_validate_full_rollout(
     targets: Tensor,
     L: int,
     K: int,
+    is_tno: bool = False,
 ) -> Tensor:
     """Run a complete AR rollout over the full trajectory for validation.
 
     Always starts at t=0 and rolls out until all timesteps are covered.
     Returns the full predicted trajectory (same shape as ``targets``).
+    When is_tno=True, feeds predictions back as branch2 input.
     """
     total_T = targets.shape[_time_axis_target(targets)]
     t_ax = _time_axis_target(targets)
 
     pred_slices = []
+    prev_pred = None
     current_t = 0
 
     while current_t + L < total_T:
@@ -332,13 +350,27 @@ def ar_validate_full_rollout(
         x_window = slice_input_window(inputs, current_t, L)
         target_times = extract_target_times(inputs, target_start, actual_K)
 
-        pred = _call_model(model, x_window, target_times)
+        # TNO: construct branch2 from previous solution
+        if is_tno:
+            if prev_pred is None:
+                y_branch2 = slice_target_window(targets, current_t, L)
+            elif prev_pred.shape[t_ax] >= L:
+                y_branch2 = prev_pred.narrow(t_ax, prev_pred.shape[t_ax] - L, L)
+            else:
+                need = L - prev_pred.shape[t_ax]
+                gt_part = slice_target_window(targets, current_t, need)
+                y_branch2 = torch.cat([gt_part, prev_pred], dim=t_ax)
+        else:
+            y_branch2 = None
+
+        pred = _call_model(model, x_window, target_times, x_branch2=y_branch2)
 
         pred_t_ax = _time_axis_target(pred)
         if pred.shape[pred_t_ax] > actual_K:
             pred = pred.narrow(pred_t_ax, 0, actual_K)
 
         pred_slices.append(pred)
+        prev_pred = pred
         current_t += K
 
     if not pred_slices:

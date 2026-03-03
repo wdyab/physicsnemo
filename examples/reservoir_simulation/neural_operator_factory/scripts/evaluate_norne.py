@@ -170,6 +170,7 @@ def main():
     parser.add_argument("--output_file", type=str, default="norne_test_swat.pt")
     parser.add_argument("--variable", type=str, default="SWAT")
     parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--tno", action="store_true", help="TNO mode: feed predictions back as branch2")
     parser.add_argument("--mask", action="store_true", help="Auto-detect ACTNUM and evaluate on active cells only")
     parser.add_argument(
         "--mode", type=str, default="full_mapping",
@@ -303,6 +304,7 @@ def main():
                 pred_batch = ar_validate_full_rollout(
                     model, x_batch, y_batch_dev,
                     L=args.L, K=args.K,
+                    is_tno=args.tno,
                 )
 
                 all_predictions.append(pred_batch.cpu().numpy())

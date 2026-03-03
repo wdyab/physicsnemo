@@ -253,6 +253,15 @@ def main(cfg: DictConfig) -> None:
         static_mask = static_mask.to(dist.device)
     mask_type = getattr(train_loader.dataset, "mask_type", None)
 
+    # Detect TNO variant
+    is_tno = (cfg.arch.model.lower() == "xdeeponet" and
+              cfg.arch.xdeeponet.get("variant", "") == "tno")
+    if is_tno:
+        if regime != "autoregressive":
+            raise ValueError("TNO variant requires regime: autoregressive")
+        if dist.rank == 0:
+            logger.info("TNO mode: branch2 receives previous solution state")
+
     # Print data info (only on rank 0)
     if dist.rank == 0:
         effective_batch_size = cfg.training.batch_size * dist.world_size
@@ -374,7 +383,7 @@ def main(cfg: DictConfig) -> None:
         
         # Build branch configs from yaml
         branch1_config = dict(xdeeponet_cfg.branch1)
-        branch2_config = dict(xdeeponet_cfg.branch2) if variant in ['mionet', 'fourier_mionet'] else None
+        branch2_config = dict(xdeeponet_cfg.branch2) if variant in ['mionet', 'fourier_mionet', 'tno'] else None
         trunk_config = dict(xdeeponet_cfg.trunk)
         
         if dimensions == "4d":
@@ -426,7 +435,12 @@ def main(cfg: DictConfig) -> None:
     with torch.no_grad():
         dummy_batch = next(iter(train_loader))
         dummy_input = dummy_batch[0].to(dist.device)
-        _ = model(dummy_input)
+        if is_tno:
+            dummy_target = dummy_batch[1].to(dist.device)
+            dummy_b2 = dummy_target[..., :ar_L]  # L timesteps as branch2 channels
+            _ = model(dummy_input, x_branch2=dummy_b2)
+        else:
+            _ = model(dummy_input)
     if dist.rank == 0:
         logger.info("Model initialization complete.")
 
@@ -661,12 +675,14 @@ def main(cfg: DictConfig) -> None:
                             max_steps=ar_max_steps,
                             use_checkpointing=ar_checkpointing,
                             spatial_mask=static_mask,
+                            is_tno=is_tno,
                         )
                     else:
                         loss = teacher_forcing_step(
                             model, inputs, targets, loss_fn,
                             L=ar_L, K=ar_K,
                             spatial_mask=static_mask,
+                            is_tno=is_tno,
                         )
                 else:
                     # Full-mapping: single forward pass over entire trajectory
@@ -735,6 +751,7 @@ def main(cfg: DictConfig) -> None:
                         if regime == "autoregressive":
                             pred = ar_validate_full_rollout(
                                 model, inputs, targets, L=ar_L, K=ar_K,
+                                is_tno=is_tno,
                             )
                         else:
                             pred = model(inputs)
