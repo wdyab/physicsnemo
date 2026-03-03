@@ -487,7 +487,13 @@ class DeepONetWrapper(nn.Module):
         x_spatial = x.permute(0, 4, 1, 2, 3)[..., 0].permute(0, 2, 3, 1)
         
         if target_times is not None:
-            x_trunk = target_times if target_times.dim() == 2 else target_times.unsqueeze(-1)
+            if self.trunk_input == 'grid':
+                t_vals = target_times if target_times.dim() == 1 else target_times.squeeze(-1)
+                spatial = x[0, 0, 0, 0, -3:-1]  # (2,) = grid_x, grid_y
+                spatial_exp = spatial.unsqueeze(0).expand(t_vals.shape[0], -1)
+                x_trunk = torch.cat([spatial_exp, t_vals.unsqueeze(-1)], dim=-1)  # (K, 3)
+            else:
+                x_trunk = target_times if target_times.dim() == 2 else target_times.unsqueeze(-1)
         elif self.trunk_input == 'grid':
             x_trunk = x[0, 0, 0, :, -3:]
         else:
@@ -850,7 +856,13 @@ class DeepONet3DWrapper(nn.Module):
         x_spatial = x[:, :, :, :, 0, :]
         
         if target_times is not None:
-            x_trunk = target_times if target_times.dim() == 2 else target_times.unsqueeze(-1)
+            if self.trunk_input == 'grid':
+                t_vals = target_times if target_times.dim() == 1 else target_times.squeeze(-1)
+                spatial = x[0, 0, 0, 0, 0, -4:-1]  # (3,) = grid_x, grid_y, grid_z
+                spatial_exp = spatial.unsqueeze(0).expand(t_vals.shape[0], -1)
+                x_trunk = torch.cat([spatial_exp, t_vals.unsqueeze(-1)], dim=-1)  # (K, 4)
+            else:
+                x_trunk = target_times if target_times.dim() == 2 else target_times.unsqueeze(-1)
         elif self.trunk_input == 'grid':
             x_trunk = x[0, 0, 0, 0, :, -4:]
         else:
