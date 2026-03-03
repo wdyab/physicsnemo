@@ -55,7 +55,6 @@ training:
   batch_size: 2
   epochs: 100                   # used by full_mapping only; ignored by autoregressive
   initial_lr: 0.001
-  checkpoint_freq: 10
   checkpoint_dir: ./checkpoints
   validate_freq: 5
   early_stopping: true
