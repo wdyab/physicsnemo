@@ -483,6 +483,12 @@ class DeepONetWrapper(nn.Module):
             (H, W), multiple=8, min_right_pad=self.padding
         )
         x = pad_spatial_right(x, spatial_ndim=2, right_pad=(pad_h, pad_w), mode="replicate")
+
+        if x_branch2 is not None and x_branch2.dim() > 2:
+            x_branch2 = pad_spatial_right(
+                x_branch2, spatial_ndim=2, right_pad=(pad_h, pad_w),
+                mode="replicate",
+            )
         
         x_spatial = x.permute(0, 4, 1, 2, 3)[..., 0].permute(0, 2, 3, 1)
         
@@ -852,6 +858,12 @@ class DeepONet3DWrapper(nn.Module):
         x = pad_spatial_right(
             x, spatial_ndim=3, right_pad=(pad_x, pad_y, pad_z), mode="replicate"
         )
+
+        if x_branch2 is not None and x_branch2.dim() > 2:
+            x_branch2 = pad_spatial_right(
+                x_branch2, spatial_ndim=3, right_pad=(pad_x, pad_y, pad_z),
+                mode="replicate",
+            )
         
         x_spatial = x[:, :, :, :, 0, :]
         

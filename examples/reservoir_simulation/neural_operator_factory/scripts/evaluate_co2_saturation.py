@@ -35,7 +35,7 @@ import argparse
 
 from models.xfno import UFNONet
 from models.physicsnemo_unet import StandaloneUNet
-from models.deeponet import DeepONetWrapper
+from models.xdeeponet import DeepONetWrapper
 from data.dataloader import ReservoirDataset
 from training.metrics import (
     mean_plume_error,

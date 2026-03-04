@@ -37,7 +37,7 @@ import mlflow.pytorch
 
 from models.xfno import UFNONet, FNO4DNet
 from models.physicsnemo_unet import StandaloneUNet
-from models.deeponet import DeepONetWrapper, DeepONet3DWrapper
+from models.xdeeponet import DeepONetWrapper, DeepONet3DWrapper
 
 def print_model_architecture(model, model_type: str, dimensions: str, cfg, logger):
     """Print detailed model architecture for any model type."""

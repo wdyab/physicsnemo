@@ -9,7 +9,7 @@ neural_operator_factory/
 ├── models/                         # Neural operator architectures
 │   ├── __init__.py                 # Exports all model classes
 │   ├── xfno.py                     # FNO variants: UFNO, UFNONet, FNO4D, FNO4DNet
-│   ├── deeponet.py                 # DeepONet variants (2D/3D): 7 configurable variants
+│   ├── xdeeponet.py                 # DeepONet variants (2D/3D): 7 configurable variants
 │   ├── unet.py                     # Custom UNet2D, UNet3D modules
 │   └── physicsnemo_unet.py         # PhysicsNeMo UNet wrappers, StandaloneUNet
 │
@@ -64,7 +64,7 @@ neural_operator_factory/
 | **Conv-FNO** | FNO + 3D convolutions | 3D only |
 | **FNO4D** | 4D FNO (3D spatial + time) | 4D only |
 
-### DeepONet Family (`models/deeponet.py`)
+### DeepONet Family (`models/xdeeponet.py`)
 
 | Variant | Description |
 |---------|-------------|

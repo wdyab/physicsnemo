@@ -24,7 +24,7 @@ Available models:
 """
 
 from models.xfno import UFNO, UFNONet, FNO4D, FNO4DNet
-from models.deeponet import (
+from models.xdeeponet import (
     TrunkNet,
     MLPBranch,
     SpatialBranch,

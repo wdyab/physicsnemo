@@ -37,7 +37,7 @@ import argparse
 import torch
 import numpy as np
 
-from models.deeponet import DeepONet3DWrapper, DeepONetWrapper
+from models.xdeeponet import DeepONet3DWrapper, DeepONetWrapper
 from models.xfno import UFNONet, FNO4DNet
 from data.dataloader import ReservoirDataset
 from training.metrics import (
