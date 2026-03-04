@@ -254,6 +254,7 @@ def main(cfg: DictConfig) -> None:
     mask_type = getattr(train_loader.dataset, "mask_type", None)
 
     # Detect TNO variant
+    regime = cfg.training.get("regime", "full_mapping").lower()
     is_tno = (cfg.arch.model.lower() == "xdeeponet" and
               cfg.arch.xdeeponet.get("variant", "") == "tno")
     if is_tno:
@@ -437,7 +438,8 @@ def main(cfg: DictConfig) -> None:
         dummy_input = dummy_batch[0].to(dist.device)
         if is_tno:
             dummy_target = dummy_batch[1].to(dist.device)
-            dummy_b2 = dummy_target[..., :ar_L]  # L timesteps as branch2 channels
+            _L = cfg.training.autoregressive.input_window
+            dummy_b2 = dummy_target[..., :_L]
             _ = model(dummy_input, x_branch2=dummy_b2)
         else:
             _ = model(dummy_input)

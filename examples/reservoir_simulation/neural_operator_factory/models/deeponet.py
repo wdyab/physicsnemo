@@ -253,7 +253,7 @@ class DeepONet(Module):
     
     VALID_VARIANTS = [
         'deeponet', 'u_deeponet', 'fourier_deeponet', 'conv_deeponet',
-        'hybrid_deeponet', 'mionet', 'fourier_mionet'
+        'hybrid_deeponet', 'mionet', 'fourier_mionet', 'tno'
     ]
     
     def __init__(
@@ -365,7 +365,7 @@ class DeepONet(Module):
         
         if self.has_branch2:
             if x_branch2 is None:
-                raise ValueError("x_branch2 required for mionet variants")
+                raise ValueError("x_branch2 required for mionet/tno variants")
             b2_out = self.branch2(x_branch2)
         
         trunk_out = self.trunk(x_time)
@@ -619,7 +619,7 @@ class DeepONet3D(Module):
     
     VALID_VARIANTS = [
         'deeponet', 'u_deeponet', 'fourier_deeponet', 'conv_deeponet',
-        'hybrid_deeponet', 'mionet', 'fourier_mionet'
+        'hybrid_deeponet', 'mionet', 'fourier_mionet', 'tno'
     ]
     
     def __init__(
@@ -732,7 +732,7 @@ class DeepONet3D(Module):
         
         if self.has_branch2:
             if x_branch2 is None:
-                raise ValueError("x_branch2 required for mionet variants")
+                raise ValueError("x_branch2 required for mionet/tno variants")
             b2_out = self.branch2(x_branch2)
         
         trunk_out = self.trunk(x_time)
