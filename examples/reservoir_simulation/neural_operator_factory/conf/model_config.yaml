@@ -93,7 +93,7 @@ arch:
   #   - fourier_mionet: Two-branch with Fourier layers
   #   - tno: Temporal Neural Operator (branch2 = previous solution, AR only)
   xdeeponet:
-    variant: tno
+    variant: u_deeponet
     width: 128
     padding: 8
     
@@ -120,7 +120,7 @@ arch:
       num_layers: 1
       # --- spatial settings (used when encoder=spatial) ---
       num_fourier_layers: 0
-      num_unet_layers: 1
+      num_unet_layers: 0
       num_conv_layers: 0
       modes1: 8
       modes2: 8

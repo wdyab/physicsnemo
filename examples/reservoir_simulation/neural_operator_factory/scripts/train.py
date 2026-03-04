@@ -931,7 +931,7 @@ def main(cfg: DictConfig) -> None:
                                 "decoder_layers": xdeeponet_cfg.decoder_layers,
                                 "decoder_activation_fn": xdeeponet_cfg.get("decoder_activation_fn", "relu"),
                             })
-                            if xdeeponet_cfg.variant in ['mionet', 'fourier_mionet']:
+                            if xdeeponet_cfg.variant in ['mionet', 'fourier_mionet', 'tno']:
                                 model_config["branch2_config"] = dict(xdeeponet_cfg.branch2)
 
                         torch.save(
