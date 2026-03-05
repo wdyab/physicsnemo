@@ -631,14 +631,13 @@ def main(cfg: DictConfig) -> None:
         tf_epochs = ar_cfg.teacher_forcing_epochs
         ro_epochs = ar_cfg.rollout_epochs
         total_epochs = tf_epochs + ro_epochs
-        ar_max_steps = ar_cfg.max_rollout_steps
         ar_checkpointing = ar_cfg.gradient_checkpointing
 
         if dist.rank == 0:
             logger.info("=" * 80)
             logger.info(f"AUTOREGRESSIVE TRAINING | L={ar_L}, K={ar_K}")
             logger.info(f"  Phase 1 — Teacher Forcing: {tf_epochs} epochs")
-            logger.info(f"  Phase 2 — Rollout (max {ar_max_steps} steps): {ro_epochs} epochs")
+            logger.info(f"  Phase 2 — Rollout (full trajectory): {ro_epochs} epochs")
             logger.info(f"  Total: {total_epochs} epochs")
             logger.info("=" * 80)
     else:
@@ -674,7 +673,6 @@ def main(cfg: DictConfig) -> None:
                         loss = rollout_step(
                             model, inputs, targets, loss_fn,
                             L=ar_L, K=ar_K,
-                            max_steps=ar_max_steps,
                             use_checkpointing=ar_checkpointing,
                             spatial_mask=static_mask,
                             is_tno=is_tno,

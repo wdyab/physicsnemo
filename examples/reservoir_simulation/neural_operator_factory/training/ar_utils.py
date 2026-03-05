@@ -33,30 +33,26 @@ Key concepts
 
 Two-phase training
 ------------------
-**Phase 1 — Teacher Forcing** (``teacher_forcing_step``):
-    Each iteration samples one random window [t0, t0+L) from the trajectory
-    and predicts the next K timesteps [t0+L, t0+L+K).  The model always
-    receives **ground-truth** input.  This teaches the correct single-step
-    mapping (the physics) and converges quickly.
+**Phase 1 -- Teacher Forcing** (``teacher_forcing_step``):
+    Sweeps sequentially through the full trajectory starting at t=0.
+    Each window [t, t+L) predicts [t+L, t+L+K).  The model always
+    receives ground-truth input.  For TNO, Branch2 also receives
+    GT solution.  Loss is averaged over all windows.
 
-**Phase 2 — Rollout** (``rollout_step``):
-    Each iteration samples a random starting point and chains up to
-    ``max_rollout_steps`` AR steps.  From the second step onward the model
-    receives **its own prediction** as input instead of ground truth.
-    Errors compound across steps and the loss backpropagates through the
-    full chain, teaching the model to produce predictions that are robust
-    to its own approximation errors.
+**Phase 2 -- Rollout** (``rollout_step``):
+    Sweeps sequentially through the full trajectory starting at t=0.
+    For TNO, Branch2 receives the model's own (detached) prediction
+    from the previous step instead of ground truth.  This trains the
+    model to handle its own approximation errors.
 
 Teacher forcing is run first to learn the physics from clean inputs.
 Rollout is run second to fine-tune for self-correcting behavior during
-long-horizon inference.  This avoids the "exposure bias" problem where a
-model trained only on perfect inputs fails when it encounters its own
-imperfect predictions at inference time.
+long-horizon inference.
 """
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 from torch import Tensor
@@ -75,30 +71,6 @@ def _time_axis_input(x: Tensor) -> int:
 def _time_axis_target(y: Tensor) -> int:
     """Time axis index for target ``(..., T)``."""
     return y.dim() - 1
-
-
-# ---------------------------------------------------------------------------
-# Random starting-point sampling
-# ---------------------------------------------------------------------------
-
-def sample_start_index(
-    total_T: int,
-    L: int,
-    K: int,
-    num_steps: int = 1,
-) -> int:
-    """Sample a random starting timestep for an AR training window.
-
-    The window ``[t0, t0 + L + K * num_steps)`` must fit inside ``[0, total_T)``.
-    """
-    required = L + K * num_steps
-    if required > total_T:
-        raise ValueError(
-            f"Window (L={L} + K={K} * steps={num_steps} = {required}) "
-            f"exceeds trajectory length T={total_T}"
-        )
-    max_start = total_T - required
-    return int(torch.randint(0, max_start + 1, (1,)).item())
 
 
 # ---------------------------------------------------------------------------
@@ -137,15 +109,11 @@ def extract_target_times(inputs: Tensor, t_start: int, K: int) -> Tensor:
     Returns
     -------
     Tensor
-        Shape ``(K,)`` — the time coordinate values for the K target steps.
+        Shape ``(K,)`` -- the time coordinate values for the K target steps.
     """
-    t_ax = _time_axis_input(inputs)
     ndim = inputs.dim()
-    # Index into [0, 0, ..., t_start:t_start+K, -1] regardless of spatial dims
-    # For 3D input (B, H, W, T, C): inputs[0, 0, 0, t_start:t_start+K, -1]
-    # For 4D input (B, X, Y, Z, T, C): inputs[0, 0, 0, 0, t_start:t_start+K, -1]
-    spatial_zeros = (0,) * (ndim - 3)  # ndim-3 = num spatial dims
-    idx = (0,) + spatial_zeros  # (0, 0, ..., 0) for batch + spatial
+    spatial_zeros = (0,) * (ndim - 3)
+    idx = (0,) + spatial_zeros
     return inputs[idx][t_start : t_start + K, -1]
 
 
@@ -183,14 +151,13 @@ def _forward_with_kwargs(model, x_window, kwargs):
 def _model_accepts_target_times(model) -> bool:
     """Check if the model's forward() accepts a ``target_times`` kwarg."""
     import inspect
-    # Unwrap DDP
     m = model.module if hasattr(model, "module") else model
     sig = inspect.signature(m.forward)
     return "target_times" in sig.parameters
 
 
 # ---------------------------------------------------------------------------
-# Teacher-forcing training step (one batch)
+# Teacher-forcing training step (one batch) -- sequential sweep
 # ---------------------------------------------------------------------------
 
 def teacher_forcing_step(
@@ -205,34 +172,53 @@ def teacher_forcing_step(
 ) -> Tensor:
     """One teacher-forcing training iteration over a batch.
 
-    Samples a **single random window** from the trajectory, runs one forward
-    pass, and returns the loss.
+    Sweeps sequentially from t=0 through the full trajectory, processing
+    every non-overlapping window.  Each window's loss is computed
+    independently (no chained graph across windows).  The returned loss
+    is the average over all windows.
 
-    When is_tno=True, branch2 receives the ground-truth solution at [t0, t0+L)
-    as a spatial field — the Temporal Neural Operator pattern.
+    For TNO, Branch2 receives the ground-truth solution at [t, t+L).
+    For all other variants, no feedback is applied.
     """
     total_T = targets.shape[_time_axis_target(targets)]
-    t0 = sample_start_index(total_T, L, K, num_steps=1)
+    t_ax = _time_axis_target(targets)
 
-    x_window = slice_input_window(inputs, t0, L)
-    y_target = slice_target_window(targets, t0 + L, K)
-    target_times = extract_target_times(inputs, t0 + L, K)
+    total_loss = torch.tensor(0.0, device=inputs.device)
+    num_windows = 0
+    current_t = 0
 
-    y_branch2 = slice_target_window(targets, t0, L) if is_tno else None
-    pred = _call_model(model, x_window, target_times, x_branch2=y_branch2)
-    t_ax = _time_axis_target(pred)
+    while current_t + L + K <= total_T:
+        target_start = current_t + L
+        remaining = total_T - target_start
+        actual_K = min(K, remaining)
+        if actual_K <= 0:
+            break
 
-    if pred.shape[t_ax] > K:
-        pred = pred.narrow(t_ax, 0, K)
-    elif pred.shape[t_ax] < K:
-        actual_K = pred.shape[t_ax]
-        y_target = slice_target_window(targets, t0 + L, actual_K)
+        x_window = slice_input_window(inputs, current_t, L)
+        y_target = slice_target_window(targets, target_start, actual_K)
+        target_times = extract_target_times(inputs, target_start, actual_K)
 
-    return loss_fn(pred, y_target, x_window, spatial_mask=spatial_mask)
+        y_branch2 = slice_target_window(targets, current_t, L) if is_tno else None
+
+        pred = _call_model(model, x_window, target_times, x_branch2=y_branch2)
+
+        if pred.shape[t_ax] > actual_K:
+            pred = pred.narrow(t_ax, 0, actual_K)
+
+        window_loss = loss_fn(pred, y_target, x_window, spatial_mask=spatial_mask)
+        total_loss = total_loss + window_loss
+        num_windows += 1
+
+        current_t += K
+
+    if num_windows == 0:
+        return torch.tensor(0.0, device=inputs.device, requires_grad=True)
+
+    return total_loss / num_windows
 
 
 # ---------------------------------------------------------------------------
-# Rollout training step (one batch)
+# Rollout training step (one batch) -- sequential chain from t=0
 # ---------------------------------------------------------------------------
 
 def rollout_step(
@@ -242,30 +228,30 @@ def rollout_step(
     loss_fn,
     L: int,
     K: int,
-    max_steps: int,
     use_checkpointing: bool = True,
     spatial_mask: Optional[Tensor] = None,
     is_tno: bool = False,
 ) -> Tensor:
     """One rollout (free-running) training iteration.
 
-    Samples a random starting point, chains up to ``max_steps`` AR steps.
-    When is_tno=True, feeds predictions back as branch2 input (TNO pattern).
+    Sweeps sequentially from t=0 through the full trajectory.  For TNO,
+    Branch2 receives the model's own (detached) prediction from the
+    previous step, creating true autoregressive feedback.  For all other
+    variants, each window is processed independently (same as teacher
+    forcing but with the full trajectory loss).
+
+    prev_pred is detached between steps to keep memory bounded --
+    gradients flow within each step but not across the full chain.
     """
     total_T = targets.shape[_time_axis_target(targets)]
-
-    effective_steps = min(max_steps, (total_T - L) // K)
-    if effective_steps < 1:
-        effective_steps = 1
-
-    t0 = sample_start_index(total_T, L, K, num_steps=effective_steps)
+    t_ax = _time_axis_target(targets)
 
     preds = []
     gt_slices = []
     prev_pred = None
-    current_t = t0
+    current_t = 0
 
-    for step in range(effective_steps):
+    while current_t + L + K <= total_T:
         target_start = current_t + L
         remaining = total_T - target_start
         actual_K = min(K, remaining)
@@ -275,9 +261,7 @@ def rollout_step(
         x_window = slice_input_window(inputs, current_t, L)
         target_times = extract_target_times(inputs, target_start, actual_K)
 
-        # TNO: construct branch2 from previous solution
         if is_tno:
-            t_ax = _time_axis_target(targets)
             if prev_pred is None:
                 y_branch2 = slice_target_window(targets, current_t, L)
             elif prev_pred.shape[t_ax] >= L:
@@ -289,28 +273,28 @@ def rollout_step(
         else:
             y_branch2 = None
 
-        pred = _call_model(model, x_window, target_times, use_checkpointing, x_branch2=y_branch2)
+        pred = _call_model(
+            model, x_window, target_times, use_checkpointing, x_branch2=y_branch2,
+        )
 
-        t_ax = _time_axis_target(pred)
         if pred.shape[t_ax] > actual_K:
             pred = pred.narrow(t_ax, 0, actual_K)
 
         preds.append(pred)
         gt_slices.append(slice_target_window(targets, target_start, actual_K))
-        prev_pred = pred
+        prev_pred = pred.detach()
 
         current_t += K
 
     if not preds:
         return torch.tensor(0.0, device=inputs.device, requires_grad=True)
 
-    t_ax = _time_axis_target(preds[0])
     pred_cat = torch.cat(preds, dim=t_ax)
     gt_cat = torch.cat(gt_slices, dim=t_ax)
 
     rollout_T = pred_cat.shape[t_ax]
-    max_input_T = inputs.shape[_time_axis_input(inputs)] - t0
-    input_for_loss = slice_input_window(inputs, t0, min(rollout_T, max_input_T))
+    max_input_T = inputs.shape[_time_axis_input(inputs)]
+    input_for_loss = slice_input_window(inputs, 0, min(rollout_T, max_input_T))
     return loss_fn(pred_cat, gt_cat, input_for_loss, spatial_mask=spatial_mask)
 
 
@@ -350,7 +334,6 @@ def ar_validate_full_rollout(
         x_window = slice_input_window(inputs, current_t, L)
         target_times = extract_target_times(inputs, target_start, actual_K)
 
-        # TNO: construct branch2 from previous solution
         if is_tno:
             if prev_pred is None:
                 y_branch2 = slice_target_window(targets, current_t, L)

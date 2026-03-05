@@ -14,7 +14,6 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from training.ar_utils import (
-    sample_start_index,
     slice_input_window,
     slice_target_window,
     extract_target_times,
@@ -71,35 +70,6 @@ class DummyModelNoTargetTimes(nn.Module):
 
 def dummy_loss(pred, target, inputs, spatial_mask=None):
     return torch.mean((pred - target) ** 2)
-
-
-# ---------------------------------------------------------------------------
-# Tests: sample_start_index
-# ---------------------------------------------------------------------------
-
-class TestSampleStartIndex:
-    def test_basic(self):
-        t0 = sample_start_index(total_T=20, L=1, K=3, num_steps=1)
-        assert 0 <= t0 <= 20 - (1 + 3)
-
-    def test_multi_step(self):
-        t0 = sample_start_index(total_T=20, L=1, K=3, num_steps=4)
-        assert 0 <= t0 <= 20 - (1 + 3 * 4)
-
-    def test_exact_fit(self):
-        t0 = sample_start_index(total_T=10, L=1, K=3, num_steps=3)
-        assert t0 == 0
-
-    def test_too_large_raises(self):
-        with pytest.raises(ValueError, match="exceeds trajectory length"):
-            sample_start_index(total_T=5, L=2, K=3, num_steps=2)
-
-    def test_deterministic_with_seed(self):
-        torch.manual_seed(42)
-        t1 = sample_start_index(total_T=100, L=1, K=3, num_steps=1)
-        torch.manual_seed(42)
-        t2 = sample_start_index(total_T=100, L=1, K=3, num_steps=1)
-        assert t1 == t2
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +185,7 @@ class TestRolloutStep:
         targets = torch.randn(2, 4, 6, 20)
         loss = rollout_step(
             model, inputs, targets, dummy_loss,
-            L=1, K=3, max_steps=3, use_checkpointing=False,
+            L=1, K=3, use_checkpointing=False,
         )
         assert loss.dim() == 0
 
@@ -225,7 +195,7 @@ class TestRolloutStep:
         targets = torch.randn(1, 4, 6, 3, 20)
         loss = rollout_step(
             model, inputs, targets, dummy_loss,
-            L=1, K=3, max_steps=2, use_checkpointing=True,
+            L=1, K=3, use_checkpointing=True,
         )
         assert loss.dim() == 0
 
@@ -235,7 +205,7 @@ class TestRolloutStep:
         targets = torch.randn(2, 4, 6, 20)
         loss = rollout_step(
             model, inputs, targets, dummy_loss,
-            L=1, K=1, max_steps=5, use_checkpointing=False,
+            L=1, K=1, use_checkpointing=False,
         )
         assert loss.dim() == 0
 
@@ -378,7 +348,7 @@ class TestGridModeTargetTimes:
         targets = torch.randn(1, 4, 6, 3, 20)
         loss = rollout_step(
             model, inputs, targets, dummy_loss,
-            L=1, K=3, max_steps=2, use_checkpointing=False,
+            L=1, K=3, use_checkpointing=False,
         )
         assert loss.dim() == 0
 
@@ -446,7 +416,7 @@ class TestTNO:
         targets = torch.randn(2, 4, 6, 20)
         loss = rollout_step(
             model, inputs, targets, dummy_loss,
-            L=1, K=3, max_steps=3, use_checkpointing=False, is_tno=True,
+            L=1, K=3, use_checkpointing=False, is_tno=True,
         )
         assert loss.dim() == 0
 
@@ -456,7 +426,7 @@ class TestTNO:
         targets = torch.randn(1, 4, 6, 3, 20)
         loss = rollout_step(
             model, inputs, targets, dummy_loss,
-            L=1, K=3, max_steps=2, use_checkpointing=False, is_tno=True,
+            L=1, K=3, use_checkpointing=False, is_tno=True,
         )
         assert loss.dim() == 0
 

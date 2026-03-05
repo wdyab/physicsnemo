@@ -75,7 +75,6 @@ training:
     output_window: 3           # K: timesteps predicted per step (DeepONet: any K; xFNO: L+K >= 2*time_modes)
     teacher_forcing_epochs: 250 # Phase 1: model sees ground-truth inputs (learns physics)
     rollout_epochs: 50         # Phase 2: model sees its own predictions (learns self-correction)
-    max_rollout_steps: 4       # Max chained AR steps per iteration (rollout phase)
     gradient_checkpointing: true
 
 optimizer:

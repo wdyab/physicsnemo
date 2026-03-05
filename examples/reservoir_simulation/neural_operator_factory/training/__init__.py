@@ -22,7 +22,6 @@ from training.ar_utils import (
     teacher_forcing_step,
     rollout_step,
     ar_validate_full_rollout,
-    sample_start_index,
     slice_input_window,
     slice_target_window,
 )
@@ -56,7 +55,6 @@ __all__ = [
     "teacher_forcing_step",
     "rollout_step",
     "ar_validate_full_rollout",
-    "sample_start_index",
     "slice_input_window",
     "slice_target_window",
     # Losses
