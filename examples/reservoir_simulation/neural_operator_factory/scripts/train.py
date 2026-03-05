@@ -707,9 +707,13 @@ def main(cfg: DictConfig) -> None:
                         pred = model(inputs)
                         loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
 
-                # Common backward pass (AR mode, or full-mapping without AMP)
-                loss.backward()
-                optimizer.step()
+                # Backward + step
+                if regime == "autoregressive":
+                    # AR functions already called backward() internally (gradient accumulation)
+                    optimizer.step()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
                 if dist.world_size > 1:
                     loss_tensor = loss.detach().clone()

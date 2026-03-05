@@ -93,8 +93,8 @@ arch:
   #   - fourier_mionet: Two-branch with Fourier layers
   #   - tno: Temporal Neural Operator (branch2 = previous solution, AR only)
   xdeeponet:
-    variant: tno
-    width: 64
+    variant: u_deeponet
+    width: 128
     padding: 8
     
     # Branch 1: Primary spatial encoder
@@ -119,7 +119,7 @@ arch:
       hidden_width: 64
       num_layers: 1
       # --- spatial settings (used when encoder=spatial) ---
-      num_fourier_layers: 3
+      num_fourier_layers: 1
       num_unet_layers: 0
       num_conv_layers: 0
       modes1: 10
@@ -133,13 +133,13 @@ arch:
     # Trunk: Temporal/coordinate encoder
     trunk:
       input_type: time        # 'time' (t only) or 'grid' (x,y,t for 3d / x,y,z,t for 4d)
-      hidden_width: 64
+      hidden_width: 128
       num_layers: 4
       activation_fn: tanh
     
     # Decoder: Output projection
     decoder_type: mlp         # 'mlp' or 'conv'
-    decoder_width: 64
+    decoder_width: 128
     decoder_layers: 2
     decoder_activation_fn: relu
 

@@ -173,9 +173,10 @@ def teacher_forcing_step(
     """One teacher-forcing training iteration over a batch.
 
     Sweeps sequentially from t=0 through the full trajectory, processing
-    every non-overlapping window.  Each window's loss is computed
-    independently (no chained graph across windows).  The returned loss
-    is the average over all windows.
+    every non-overlapping window.  Uses gradient accumulation: each window
+    is forwarded and backwarded independently (one graph at a time).
+    Returns a detached scalar loss for logging.  The caller should NOT
+    call loss.backward() — only optimizer.step().
 
     For TNO, Branch2 receives the ground-truth solution at [t, t+L).
     For all other variants, no feedback is applied.
@@ -183,11 +184,14 @@ def teacher_forcing_step(
     total_T = targets.shape[_time_axis_target(targets)]
     t_ax = _time_axis_target(targets)
 
-    total_loss = torch.tensor(0.0, device=inputs.device)
-    num_windows = 0
+    num_windows = (total_T - L) // K
+    if num_windows <= 0:
+        return torch.tensor(0.0, device=inputs.device)
+
+    accumulated_loss = 0.0
     current_t = 0
 
-    while current_t + L + K <= total_T:
+    for _ in range(num_windows):
         target_start = current_t + L
         remaining = total_T - target_start
         actual_K = min(K, remaining)
@@ -206,15 +210,13 @@ def teacher_forcing_step(
             pred = pred.narrow(t_ax, 0, actual_K)
 
         window_loss = loss_fn(pred, y_target, x_window, spatial_mask=spatial_mask)
-        total_loss = total_loss + window_loss
-        num_windows += 1
+        if window_loss.requires_grad:
+            (window_loss / num_windows).backward()
+        accumulated_loss += window_loss.detach().item()
 
         current_t += K
 
-    if num_windows == 0:
-        return torch.tensor(0.0, device=inputs.device, requires_grad=True)
-
-    return total_loss / num_windows
+    return torch.tensor(accumulated_loss / num_windows, device=inputs.device)
 
 
 # ---------------------------------------------------------------------------
@@ -234,24 +236,27 @@ def rollout_step(
 ) -> Tensor:
     """One rollout (free-running) training iteration.
 
-    Sweeps sequentially from t=0 through the full trajectory.  For TNO,
-    Branch2 receives the model's own (detached) prediction from the
-    previous step, creating true autoregressive feedback.  For all other
-    variants, each window is processed independently (same as teacher
-    forcing but with the full trajectory loss).
+    Sweeps sequentially from t=0 through the full trajectory.  Uses
+    gradient accumulation: each window is forwarded and backwarded
+    independently.  Returns a detached scalar loss for logging.
+    The caller should NOT call loss.backward() — only optimizer.step().
 
-    prev_pred is detached between steps to keep memory bounded --
-    gradients flow within each step but not across the full chain.
+    For TNO, Branch2 receives the model's own (detached) prediction
+    from the previous step, creating true autoregressive feedback.
+    For all other variants, each window is processed independently.
     """
     total_T = targets.shape[_time_axis_target(targets)]
     t_ax = _time_axis_target(targets)
 
-    preds = []
-    gt_slices = []
+    num_windows = (total_T - L) // K
+    if num_windows <= 0:
+        return torch.tensor(0.0, device=inputs.device)
+
+    accumulated_loss = 0.0
     prev_pred = None
     current_t = 0
 
-    while current_t + L + K <= total_T:
+    for _ in range(num_windows):
         target_start = current_t + L
         remaining = total_T - target_start
         actual_K = min(K, remaining)
@@ -259,6 +264,7 @@ def rollout_step(
             break
 
         x_window = slice_input_window(inputs, current_t, L)
+        y_target = slice_target_window(targets, target_start, actual_K)
         target_times = extract_target_times(inputs, target_start, actual_K)
 
         if is_tno:
@@ -280,22 +286,15 @@ def rollout_step(
         if pred.shape[t_ax] > actual_K:
             pred = pred.narrow(t_ax, 0, actual_K)
 
-        preds.append(pred)
-        gt_slices.append(slice_target_window(targets, target_start, actual_K))
-        prev_pred = pred.detach()
+        window_loss = loss_fn(pred, y_target, x_window, spatial_mask=spatial_mask)
+        if window_loss.requires_grad:
+            (window_loss / num_windows).backward()
+        accumulated_loss += window_loss.detach().item()
 
+        prev_pred = pred.detach()
         current_t += K
 
-    if not preds:
-        return torch.tensor(0.0, device=inputs.device, requires_grad=True)
-
-    pred_cat = torch.cat(preds, dim=t_ax)
-    gt_cat = torch.cat(gt_slices, dim=t_ax)
-
-    rollout_T = pred_cat.shape[t_ax]
-    max_input_T = inputs.shape[_time_axis_input(inputs)]
-    input_for_loss = slice_input_window(inputs, 0, min(rollout_T, max_input_T))
-    return loss_fn(pred_cat, gt_cat, input_for_loss, spatial_mask=spatial_mask)
+    return torch.tensor(accumulated_loss / num_windows, device=inputs.device)
 
 
 # ---------------------------------------------------------------------------
