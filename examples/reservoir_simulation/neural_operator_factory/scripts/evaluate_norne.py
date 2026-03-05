@@ -135,8 +135,16 @@ def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial
     for t in range(num_timesteps):
         pred_t = all_predictions[..., t]
         gt_t = all_targets[..., t]
-        t_mae = np.mean(np.abs(pred_t - gt_t))
-        t_mse = np.mean((pred_t - gt_t) ** 2)
+        if spatial_mask is not None:
+            mt = spatial_mask
+            for _ in range(pred_t.ndim - mt.ndim):
+                mt = mt[np.newaxis] if mt.ndim < pred_t.ndim - 1 else mt[..., np.newaxis]
+            mt = np.broadcast_to(mt, pred_t.shape)
+            pt, gt = pred_t[mt], gt_t[mt]
+        else:
+            pt, gt = pred_t.ravel(), gt_t.ravel()
+        t_mae = np.mean(np.abs(pt - gt))
+        t_mse = np.mean((pt - gt) ** 2)
         t_rmse = np.sqrt(t_mse)
         print(f"{t:4d} | {t_mae:12.6e} | {t_mse:12.6e} | {t_rmse:12.6e}")
 
@@ -147,10 +155,19 @@ def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial
     n = all_predictions.shape[0]
     show_idx = list(range(min(10, n))) + list(range(max(10, n - 5), n))
     for i in show_idx:
-        s_mae = np.mean(np.abs(all_predictions[i] - all_targets[i]))
-        s_rmse = np.sqrt(np.mean((all_predictions[i] - all_targets[i]) ** 2))
-        s_rel_l2 = compute_relative_l2_error(all_predictions[i], all_targets[i])
-        s_r2 = compute_r2_score(all_predictions[i].ravel(), all_targets[i].ravel())
+        pi, gi = all_predictions[i], all_targets[i]
+        if spatial_mask is not None:
+            ms = spatial_mask
+            for _ in range(pi.ndim - ms.ndim):
+                ms = ms[..., np.newaxis]
+            ms = np.broadcast_to(ms, pi.shape)
+            pi_f, gi_f = pi[ms], gi[ms]
+        else:
+            pi_f, gi_f = pi.ravel(), gi.ravel()
+        s_mae = np.mean(np.abs(pi_f - gi_f))
+        s_rmse = np.sqrt(np.mean((pi_f - gi_f) ** 2))
+        s_rel_l2 = compute_relative_l2_error(pi_f, gi_f)
+        s_r2 = compute_r2_score(pi_f, gi_f)
         print(f"{i:6d} | {s_mae:12.6e} | {s_rmse:12.6e} | {s_rel_l2:12.6e} | {s_r2:8.4f}")
 
     print()
