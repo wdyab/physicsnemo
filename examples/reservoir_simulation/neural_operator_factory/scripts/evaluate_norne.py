@@ -136,10 +136,7 @@ def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial
         pred_t = all_predictions[..., t]
         gt_t = all_targets[..., t]
         if spatial_mask is not None:
-            mt = spatial_mask
-            for _ in range(pred_t.ndim - mt.ndim):
-                mt = mt[np.newaxis] if mt.ndim < pred_t.ndim - 1 else mt[..., np.newaxis]
-            mt = np.broadcast_to(mt, pred_t.shape)
+            mt = np.broadcast_to(spatial_mask[np.newaxis], pred_t.shape)
             pt, gt = pred_t[mt], gt_t[mt]
         else:
             pt, gt = pred_t.ravel(), gt_t.ravel()
@@ -157,10 +154,7 @@ def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial
     for i in show_idx:
         pi, gi = all_predictions[i], all_targets[i]
         if spatial_mask is not None:
-            ms = spatial_mask
-            for _ in range(pi.ndim - ms.ndim):
-                ms = ms[..., np.newaxis]
-            ms = np.broadcast_to(ms, pi.shape)
+            ms = np.broadcast_to(spatial_mask[..., np.newaxis], pi.shape)
             pi_f, gi_f = pi[ms], gi[ms]
         else:
             pi_f, gi_f = pi.ravel(), gi.ravel()
