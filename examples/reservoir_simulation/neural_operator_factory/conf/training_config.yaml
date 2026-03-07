@@ -66,16 +66,54 @@ training:
   # Training Regime
   # ---------------------------------------------------------------------------
   # full_mapping:    Predict entire trajectory in one forward pass (default).
-  # autoregressive:  Predict K timesteps from L context timesteps,
-  #                  with two-phase training (teacher forcing then rollout).
+  # autoregressive:  Predict K timesteps from L context timesteps.
+  #   Three-stage training: teacher forcing -> pushforward -> rollout
+  #   Works with any model type and any spatial dimensionality: 3d (CO2) and 4d (Norne)
   regime: autoregressive
 
   autoregressive:
-    input_window: 1            # L: number of context timesteps fed to model
-    output_window: 3           # K: timesteps predicted per step (DeepONet: any K; xFNO: L+K >= 2*time_modes)
-    teacher_forcing_epochs: 20 # Phase 1: model sees ground-truth inputs (learns physics)
-    rollout_epochs: 200         # Phase 2: model sees its own predictions (learns self-correction)
+    # L: number of context timesteps fed to the model as input.
+    input_window: 1
+
+    # K: number of timesteps the model predicts per forward pass.
+    # DeepONet/TNO: any K value works (temporal bundling via trunk queries).
+    # xFNO: requires L + K >= 2 * time_modes for proper spectral resolution.
+    output_window: 3
+
+    # Stage 1 -- Teacher Forcing: model always sees ground-truth input.
+    # Teaches the underlying physics from clean signals.
+    teacher_forcing_epochs: 20
+
+    # Stage 2 -- Pushforward: short unrolled chains with live gradients.
+    # Gradually increases unroll length (curriculum) to bridge the gap
+    # between teacher forcing and free-running rollout.
+    # Set to 0 to skip this stage and go directly to rollout.
+    pushforward_epochs: 30
+
+    # Stage 3 -- Rollout: free-running autoregressive sweep (detached feedback).
+    # Each window sees the model's own (detached) predictions,
+    # training the model to self-correct approximation errors.
+    rollout_epochs: 200
+
+    # Maximum number of pushforward unroll steps.
+    # Curriculum linearly ramps from 1 to this value over pushforward_epochs.
+    max_unroll: 5
+
+    # Noise standard deviation injected into branch2 / feedback during training.
+    # Positive values add Gaussian noise for robustness; 0 disables.
+    noise_std: 0.0
+
+    # Feedback channel: append previous prediction as an extra input channel.
+    # When true, the model receives (C + 1) input channels instead of C.
+    # Set to false to disable.
+    use_feedback_channel: false
+
+    # Gradient checkpointing: trade compute for memory during rollout / pushforward.
     gradient_checkpointing: true
+
+    # Factor to reset learning rate at each stage transition.
+    # 1.0 = no reset; < 1.0 = scale LR up relative to current schedule.
+    lr_reset_factor: 1.0
 
 optimizer:
   type: adam

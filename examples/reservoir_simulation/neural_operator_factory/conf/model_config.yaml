@@ -134,7 +134,7 @@ arch:
     trunk:
       input_type: time        # 'time' (t only) or 'grid' (x,y,t for 3d / x,y,z,t for 4d)
       hidden_width: 128
-      num_layers: 4
+      num_layers: 8
       activation_fn: tanh
     
     # Decoder: Output projection

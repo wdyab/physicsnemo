@@ -636,8 +636,8 @@ def main(cfg: DictConfig) -> None:
         if dist.rank == 0:
             logger.info("=" * 80)
             logger.info(f"AUTOREGRESSIVE TRAINING | L={ar_L}, K={ar_K}")
-            logger.info(f"  Phase 1 — Teacher Forcing: {tf_epochs} epochs")
-            logger.info(f"  Phase 2 — Rollout (full trajectory): {ro_epochs} epochs")
+            logger.info(f"  Stage 1 — Teacher Forcing: {tf_epochs} epochs")
+            logger.info(f"  Stage 2 — Rollout (full trajectory): {ro_epochs} epochs")
             logger.info(f"  Total: {total_epochs} epochs")
             logger.info("=" * 80)
     else:
@@ -654,7 +654,7 @@ def main(cfg: DictConfig) -> None:
         if hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
 
-        # Training phase
+        # Training step
         with LaunchLogger(
             "train", epoch=epoch, num_mini_batch=len(train_loader)
         ) as log:
@@ -667,9 +667,9 @@ def main(cfg: DictConfig) -> None:
                 optimizer.zero_grad()
 
                 if regime == "autoregressive":
-                    # Determine phase: teacher forcing or rollout
-                    is_rollout_phase = epoch > tf_epochs
-                    if is_rollout_phase:
+                    # Determine stage: teacher forcing or rollout
+                    is_rollout_stage = epoch > tf_epochs
+                    if is_rollout_stage:
                         loss = rollout_step(
                             model, inputs, targets, loss_fn,
                             L=ar_L, K=ar_K,
@@ -726,12 +726,12 @@ def main(cfg: DictConfig) -> None:
 
             avg_train_loss = total_loss / len(train_loader)
 
-            # Log phase info for AR
+            # Log stage info for AR
             if regime == "autoregressive" and dist.rank == 0:
-                phase_name = "ROLLOUT" if epoch > tf_epochs else "TEACHER-FORCING"
+                stage_name = "ROLLOUT" if epoch > tf_epochs else "TEACHER-FORCING"
                 if epoch == tf_epochs + 1:
                     logger.info("=" * 40)
-                    logger.info("Switching to ROLLOUT phase")
+                    logger.info("Switching to ROLLOUT stage")
                     logger.info("=" * 40)
 
             log.log_epoch({"loss": avg_train_loss})
@@ -739,7 +739,7 @@ def main(cfg: DictConfig) -> None:
             if cfg.logging.use_mlflow and dist.rank == 0:
                 mlflow.log_metric("train_loss", float(avg_train_loss), step=epoch)
 
-        # Validation phase
+        # Validation step
         if epoch % cfg.training.validate_freq == 0:
             with LaunchLogger("valid", epoch=epoch) as log:
                 model.eval()

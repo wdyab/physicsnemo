@@ -1,8 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-"""Unit tests for autoregressive training utilities."""
+"""Comprehensive unit tests for autoregressive training utilities."""
 
 import sys
 from pathlib import Path
@@ -14,21 +26,30 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from training.ar_utils import (
-    slice_input_window,
-    slice_target_window,
-    extract_target_times,
-    teacher_forcing_step,
-    rollout_step,
-    ar_validate_full_rollout,
+    _build_branch2,
+    _iter_windows,
+    _model_accepts_target_times,
+    _model_accepts_x_branch2,
     _time_axis_input,
     _time_axis_target,
-    _model_accepts_target_times,
+    add_noise,
+    ar_validate_full_rollout,
+    compute_unroll_steps,
+    extract_target_times,
+    get_training_stage,
+    inject_feedback_channel,
+    pushforward_step,
+    rollout_step,
+    slice_input_window,
+    slice_target_window,
+    teacher_forcing_step,
 )
 
 
 # ---------------------------------------------------------------------------
-# Fixtures — dummy models
+# Dummy models
 # ---------------------------------------------------------------------------
+
 
 class DummyModel3D(nn.Module):
     """Returns zeros; output T = target_times length if given, else T_in."""
@@ -40,7 +61,7 @@ class DummyModel3D(nn.Module):
     def forward(self, x, target_times=None):
         B, H, W, T_in, C = x.shape
         T_out = target_times.shape[0] if target_times is not None else T_in
-        return torch.zeros(B, H, W, T_out, device=x.device)
+        return torch.zeros(B, H, W, T_out, device=x.device) + self.linear.weight.sum() * 0
 
 
 class DummyModel4D(nn.Module):
@@ -53,7 +74,7 @@ class DummyModel4D(nn.Module):
     def forward(self, x, target_times=None):
         B, X, Y, Z, T_in, C = x.shape
         T_out = target_times.shape[0] if target_times is not None else T_in
-        return torch.zeros(B, X, Y, Z, T_out, device=x.device)
+        return torch.zeros(B, X, Y, Z, T_out, device=x.device) + self.linear.weight.sum() * 0
 
 
 class DummyModelNoTargetTimes(nn.Module):
@@ -65,18 +86,107 @@ class DummyModelNoTargetTimes(nn.Module):
 
     def forward(self, x):
         B, H, W, T_in, C = x.shape
-        return torch.zeros(B, H, W, T_in, device=x.device)
+        return torch.zeros(B, H, W, T_in, device=x.device) + self.linear.weight.sum() * 0
+
+
+class DummyTNOModel3D(nn.Module):
+    """TNO-style 3D model: accepts x_branch2."""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(1, 1)
+
+    def forward(self, x, target_times=None, x_branch2=None):
+        B, H, W, T_in, C = x.shape
+        T_out = target_times.shape[0] if target_times is not None else T_in
+        return torch.zeros(B, H, W, T_out, device=x.device) + self.linear.weight.sum() * 0
+
+
+class DummyTNOModel4D(nn.Module):
+    """TNO-style 4D model: accepts x_branch2."""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(1, 1)
+
+    def forward(self, x, target_times=None, x_branch2=None):
+        B, X, Y, Z, T_in, C = x.shape
+        T_out = target_times.shape[0] if target_times is not None else T_in
+        return torch.zeros(B, X, Y, Z, T_out, device=x.device) + self.linear.weight.sum() * 0
+
+
+class DummyFeedbackModel3D(nn.Module):
+    """Asserts C == base_channels + 1 (feedback channel present)."""
+
+    def __init__(self, base_channels=5):
+        super().__init__()
+        self.base_channels = base_channels
+        self.linear = nn.Linear(1, 1)
+
+    def forward(self, x, target_times=None):
+        B, H, W, T_in, C = x.shape
+        assert C == self.base_channels + 1, (
+            f"Expected {self.base_channels + 1} channels, got {C}"
+        )
+        T_out = target_times.shape[0] if target_times is not None else T_in
+        return torch.zeros(B, H, W, T_out, device=x.device) + self.linear.weight.sum() * 0
+
+
+class DummyIdentityModel3D(nn.Module):
+    """Returns scale * ones; useful for gradient flow tests."""
+
+    def __init__(self):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, x, target_times=None):
+        B, H, W, T_in, C = x.shape
+        T_out = target_times.shape[0] if target_times is not None else T_in
+        return self.scale * torch.ones(B, H, W, T_out, device=x.device)
 
 
 def dummy_loss(pred, target, inputs, spatial_mask=None):
+    """Simple MSE loss for testing."""
     return torch.mean((pred - target) ** 2)
 
 
 # ---------------------------------------------------------------------------
-# Tests: slicing
+# Tests: _time_axis_input, _time_axis_target
 # ---------------------------------------------------------------------------
 
+
+class TestTimeAxisHelpers:
+    """Tests for _time_axis_input and _time_axis_target."""
+
+    def test_input_3d(self):
+        assert _time_axis_input(torch.randn(2, 8, 10, 24, 5)) == 3
+
+    def test_input_4d(self):
+        assert _time_axis_input(torch.randn(2, 8, 10, 6, 24, 5)) == 4
+
+    def test_target_3d_single_output(self):
+        assert _time_axis_target(torch.randn(2, 8, 10, 24)) == 3
+
+    def test_target_4d_single_output(self):
+        assert _time_axis_target(torch.randn(2, 8, 10, 6, 24)) == 4
+
+    def test_input_multi_output(self):
+        """Multi-output input has same layout -- extra channels, same ndim."""
+        assert _time_axis_input(torch.randn(2, 8, 10, 24, 11)) == 3
+
+    def test_target_multi_output(self):
+        """5D target treated as 4D-spatial (B, X, Y, Z, T); time axis is last."""
+        assert _time_axis_target(torch.randn(2, 8, 10, 6, 24)) == 4
+
+
+# ---------------------------------------------------------------------------
+# Tests: slice_input_window, slice_target_window
+# ---------------------------------------------------------------------------
+
+
 class TestSlicing:
+    """Tests for slice_input_window and slice_target_window."""
+
     def test_slice_input_3d(self):
         x = torch.randn(2, 8, 10, 24, 5)
         w = slice_input_window(x, t0=3, width=4)
@@ -101,21 +211,35 @@ class TestSlicing:
         assert w.shape == (2, 8, 10, 6, 3)
         assert torch.equal(w, y[:, :, :, :, 0:3])
 
+    def test_slice_input_many_channels(self):
+        """Slicing works regardless of channel count."""
+        x = torch.randn(2, 8, 10, 24, 11)
+        w = slice_input_window(x, t0=0, width=6)
+        assert w.shape == (2, 8, 10, 6, 11)
+
+    def test_slice_target_4d_spatial(self):
+        """4D spatial target (B, X, Y, Z, T): slice along last dim."""
+        y = torch.randn(2, 8, 10, 6, 24)
+        w = slice_target_window(y, t0=5, width=4)
+        assert w.shape == (2, 8, 10, 6, 4)
+        assert torch.equal(w, y[:, :, :, :, 5:9])
+
 
 # ---------------------------------------------------------------------------
 # Tests: extract_target_times
 # ---------------------------------------------------------------------------
 
+
 class TestExtractTargetTimes:
+    """Tests for extract_target_times."""
+
     def test_3d_extracts_last_channel(self):
-        # (B=2, H=4, W=6, T=16, C=5) — last channel is time coord
         x = torch.randn(2, 4, 6, 16, 5)
         times = extract_target_times(x, t_start=5, K=3)
         assert times.shape == (3,)
         assert torch.equal(times, x[0, 0, 0, 5:8, -1])
 
     def test_4d_extracts_last_channel(self):
-        # (B=2, X=4, Y=6, Z=3, T=20, C=11) — last channel is time coord
         x = torch.randn(2, 4, 6, 3, 20, 11)
         times = extract_target_times(x, t_start=10, K=5)
         assert times.shape == (5,)
@@ -128,22 +252,208 @@ class TestExtractTargetTimes:
 
 
 # ---------------------------------------------------------------------------
-# Tests: _model_accepts_target_times
+# Tests: inject_feedback_channel
 # ---------------------------------------------------------------------------
 
-class TestModelAcceptsTargetTimes:
+
+class TestInjectFeedbackChannel:
+    """Tests for inject_feedback_channel."""
+
+    def test_none_feedback_returns_unchanged(self):
+        """None feedback returns input window unchanged."""
+        x = torch.randn(2, 4, 6, 3, 5)
+        result = inject_feedback_channel(x, None)
+        assert result.shape == (2, 4, 6, 3, 5)
+        assert torch.equal(result, x)
+
+    def test_single_output_feedback(self):
+        """Single-output feedback (B, *spatial, T) is unsqueezed and concatenated."""
+        x = torch.randn(2, 4, 6, 3, 5)
+        fb = torch.randn(2, 4, 6, 3)
+        result = inject_feedback_channel(x, fb)
+        assert result.shape == (2, 4, 6, 3, 6)
+        assert torch.equal(result[:, :, :, :, :5], x)
+        assert torch.equal(result[:, :, :, :, 5], fb)
+
+    def test_multi_output_feedback(self):
+        """Multi-output feedback (B, *spatial, T, C_out) concatenated directly."""
+        x = torch.randn(2, 4, 6, 3, 5)
+        fb = torch.randn(2, 4, 6, 3, 2)
+        result = inject_feedback_channel(x, fb)
+        assert result.shape == (2, 4, 6, 3, 7)
+
+
+# ---------------------------------------------------------------------------
+# Tests: add_noise
+# ---------------------------------------------------------------------------
+
+
+class TestAddNoise:
+    """Tests for add_noise."""
+
+    def test_zero_std(self):
+        """noise_std == 0 returns tensor unchanged."""
+        t = torch.randn(3, 4)
+        result = add_noise(t, 0.0)
+        assert torch.equal(result, t)
+
+    def test_positive_std(self):
+        """Positive noise_std adds noise."""
+        t = torch.randn(3, 4)
+        result = add_noise(t, 0.1)
+        assert not torch.equal(result, t)
+        assert torch.allclose(result, t, atol=1.0)
+
+    def test_negative_std(self):
+        """Negative noise_std treated as disabled."""
+        t = torch.randn(3, 4)
+        result = add_noise(t, -0.5)
+        assert torch.equal(result, t)
+
+
+# ---------------------------------------------------------------------------
+# Tests: compute_unroll_steps
+# ---------------------------------------------------------------------------
+
+
+class TestComputeUnrollSteps:
+    """Tests for compute_unroll_steps."""
+
+    def test_start(self):
+        """At start_epoch, returns 1."""
+        result = compute_unroll_steps(epoch=10, start_epoch=10, total_epochs=100, max_unroll=10)
+        assert result == 1
+
+    def test_end(self):
+        """At start + total, returns max_unroll."""
+        result = compute_unroll_steps(epoch=110, start_epoch=10, total_epochs=100, max_unroll=10)
+        assert result == 10
+
+    def test_midpoint(self):
+        """Midpoint returns approximately half of max_unroll."""
+        result = compute_unroll_steps(epoch=60, start_epoch=10, total_epochs=100, max_unroll=10)
+        assert 4 <= result <= 6
+
+    def test_zero_stage(self):
+        """total_epochs == 0 returns max_unroll immediately."""
+        result = compute_unroll_steps(epoch=0, start_epoch=0, total_epochs=0, max_unroll=10)
+        assert result == 10
+
+    def test_beyond_end(self):
+        """Epoch past the end clamps to max_unroll."""
+        result = compute_unroll_steps(epoch=500, start_epoch=10, total_epochs=100, max_unroll=10)
+        assert result == 10
+
+    def test_curriculum_end_exact(self):
+        """epoch=121, start=21, total=100 gives exactly max_unroll."""
+        result = compute_unroll_steps(epoch=121, start_epoch=21, total_epochs=100, max_unroll=10)
+        assert result == 10
+
+
+# ---------------------------------------------------------------------------
+# Tests: _iter_windows
+# ---------------------------------------------------------------------------
+
+
+class TestIterWindows:
+    """Tests for _iter_windows."""
+
+    def test_non_overlapping(self):
+        """stride=K produces non-overlapping windows."""
+        windows = list(_iter_windows(total_T=16, L=1, K=3, stride=3))
+        assert len(windows) == 5
+        for t0, ts, ak in windows:
+            assert ts == t0 + 1
+            assert ak == 3
+
+    def test_stride_1(self):
+        """stride=1 produces overlapping windows with truncation at the end."""
+        windows = list(_iter_windows(total_T=6, L=1, K=3, stride=1))
+        assert len(windows) == 5
+        assert windows[0] == (0, 1, 3)
+        assert windows[-1] == (4, 5, 1)
+
+    def test_stride_equals_K(self):
+        """Explicit stride=K same as non-overlapping."""
+        w1 = list(_iter_windows(total_T=16, L=1, K=3, stride=3))
+        w2 = list(_iter_windows(total_T=16, L=1, K=3, stride=3))
+        assert w1 == w2
+
+    def test_last_window_truncated(self):
+        """Remaining timesteps < K produces a truncated window."""
+        windows = list(_iter_windows(total_T=10, L=1, K=4, stride=4))
+        assert len(windows) == 3
+        assert windows[-1][2] == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_training_stage
+# ---------------------------------------------------------------------------
+
+
+class TestGetTrainingStage:
+    """Tests for get_training_stage."""
+
+    def test_teacher_forcing_stage(self):
+        assert get_training_stage(epoch=5, tf_epochs=20, pf_epochs=30, ro_epochs=50) == "teacher_forcing"
+
+    def test_pushforward_stage(self):
+        assert get_training_stage(epoch=25, tf_epochs=20, pf_epochs=30, ro_epochs=50) == "pushforward"
+
+    def test_rollout_stage(self):
+        assert get_training_stage(epoch=55, tf_epochs=20, pf_epochs=30, ro_epochs=50) == "rollout"
+
+    def test_no_pushforward(self):
+        """pf_epochs=0 jumps directly from teacher forcing to rollout."""
+        assert get_training_stage(epoch=25, tf_epochs=20, pf_epochs=0, ro_epochs=50) == "rollout"
+
+    def test_no_rollout(self):
+        """ro_epochs=0 with large pf_epochs keeps epoch in pushforward."""
+        assert get_training_stage(epoch=500, tf_epochs=20, pf_epochs=10000, ro_epochs=0) == "pushforward"
+
+    def test_tf_pf_boundary(self):
+        """Exact transition from teacher forcing to pushforward."""
+        assert get_training_stage(epoch=19, tf_epochs=20, pf_epochs=30, ro_epochs=50) == "teacher_forcing"
+        assert get_training_stage(epoch=20, tf_epochs=20, pf_epochs=30, ro_epochs=50) == "pushforward"
+
+    def test_pf_rollout_boundary(self):
+        """Exact transition from pushforward to rollout."""
+        assert get_training_stage(epoch=49, tf_epochs=20, pf_epochs=30, ro_epochs=50) == "pushforward"
+        assert get_training_stage(epoch=50, tf_epochs=20, pf_epochs=30, ro_epochs=50) == "rollout"
+
+
+# ---------------------------------------------------------------------------
+# Tests: _model_accepts_target_times, _model_accepts_x_branch2
+# ---------------------------------------------------------------------------
+
+
+class TestModelIntrospection:
+    """Tests for _model_accepts_target_times and _model_accepts_x_branch2."""
+
     def test_model_with_target_times(self):
         assert _model_accepts_target_times(DummyModel3D()) is True
 
     def test_model_without_target_times(self):
         assert _model_accepts_target_times(DummyModelNoTargetTimes()) is False
 
+    def test_tno_accepts_x_branch2(self):
+        assert _model_accepts_x_branch2(DummyTNOModel3D()) is True
+
+    def test_standard_model_no_x_branch2(self):
+        assert _model_accepts_x_branch2(DummyModel3D()) is False
+
+    def test_no_target_times_no_x_branch2(self):
+        assert _model_accepts_x_branch2(DummyModelNoTargetTimes()) is False
+
 
 # ---------------------------------------------------------------------------
 # Tests: teacher_forcing_step
 # ---------------------------------------------------------------------------
 
+
 class TestTeacherForcing:
+    """Tests for teacher_forcing_step."""
+
     def test_3d_returns_scalar_loss(self):
         model = DummyModel3D()
         inputs = torch.randn(2, 4, 6, 16, 5)
@@ -158,19 +468,164 @@ class TestTeacherForcing:
         loss = teacher_forcing_step(model, inputs, targets, dummy_loss, L=1, K=3)
         assert loss.dim() == 0
 
-    def test_3d_k_equals_1(self):
+    def test_k_equals_1(self):
         model = DummyModel3D()
         inputs = torch.randn(2, 4, 6, 16, 5)
         targets = torch.randn(2, 4, 6, 16)
         loss = teacher_forcing_step(model, inputs, targets, dummy_loss, L=1, K=1)
         assert loss.dim() == 0
 
-    def test_model_without_target_times_still_works(self):
+    def test_stride_1(self):
+        """stride=1 processes overlapping windows without error."""
+        model = DummyModel3D()
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        loss = teacher_forcing_step(
+            model, inputs, targets, dummy_loss, L=1, K=3, stride=1,
+        )
+        assert loss.dim() == 0
+
+    def test_tno(self):
+        model = DummyTNOModel3D()
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        loss = teacher_forcing_step(
+            model, inputs, targets, dummy_loss, L=1, K=3, is_tno=True,
+        )
+        assert loss.dim() == 0
+
+    def test_noise(self):
+        """Non-zero noise_std does not crash."""
+        model = DummyTNOModel3D()
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        loss = teacher_forcing_step(
+            model, inputs, targets, dummy_loss, L=1, K=3,
+            is_tno=True, noise_std=0.1,
+        )
+        assert loss.dim() == 0
+
+    def test_feedback_channel(self):
+        """feedback_channel injects an extra channel from GT target."""
+        model = DummyFeedbackModel3D(base_channels=5)
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        loss = teacher_forcing_step(
+            model, inputs, targets, dummy_loss, L=1, K=3,
+            feedback_channel=0,
+        )
+        assert loss.dim() == 0
+
+    def test_no_target_times_model(self):
+        """Model without target_times still works (K must equal L)."""
         model = DummyModelNoTargetTimes()
         inputs = torch.randn(2, 4, 6, 16, 5)
         targets = torch.randn(2, 4, 6, 16)
-        # K=1 since this model produces L output timesteps
-        loss = teacher_forcing_step(model, inputs, targets, dummy_loss, L=1, K=1)
+        loss = teacher_forcing_step(
+            model, inputs, targets, dummy_loss, L=1, K=1,
+        )
+        assert loss.dim() == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: pushforward_step
+# ---------------------------------------------------------------------------
+
+
+class TestPushforwardStep:
+    """Tests for pushforward_step."""
+
+    def test_3d(self):
+        model = DummyModel3D()
+        model.train()
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        loss = pushforward_step(
+            model, inputs, targets, dummy_loss, L=1, K=3, unroll_steps=2,
+        )
+        assert loss.dim() == 0
+
+    def test_4d(self):
+        model = DummyModel4D()
+        model.train()
+        inputs = torch.randn(1, 4, 6, 3, 16, 5)
+        targets = torch.randn(1, 4, 6, 3, 16)
+        loss = pushforward_step(
+            model, inputs, targets, dummy_loss, L=1, K=3, unroll_steps=2,
+        )
+        assert loss.dim() == 0
+
+    def test_tno_live_gradients(self):
+        """TNO pushforward runs without error."""
+        model = DummyTNOModel3D()
+        model.train()
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        loss = pushforward_step(
+            model, inputs, targets, dummy_loss,
+            L=1, K=3, unroll_steps=2, is_tno=True,
+        )
+        assert loss.dim() == 0
+
+    def test_unroll_1(self):
+        """unroll_steps=1 processes one step per group."""
+        model = DummyModel3D()
+        model.train()
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        loss = pushforward_step(
+            model, inputs, targets, dummy_loss, L=1, K=3, unroll_steps=1,
+        )
+        assert loss.dim() == 0
+
+    def test_large_unroll(self):
+        """Large unroll_steps covers all windows in a single group."""
+        model = DummyModel3D()
+        model.train()
+        inputs = torch.randn(2, 4, 6, 20, 5)
+        targets = torch.randn(2, 4, 6, 20)
+        loss = pushforward_step(
+            model, inputs, targets, dummy_loss, L=1, K=3, unroll_steps=100,
+        )
+        assert loss.dim() == 0
+
+    def test_feedback_channel(self):
+        """Feedback channel with pushforward."""
+        model = DummyFeedbackModel3D(base_channels=5)
+        model.train()
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        loss = pushforward_step(
+            model, inputs, targets, dummy_loss,
+            L=1, K=3, unroll_steps=2, feedback_channel=0,
+        )
+        assert loss.dim() == 0
+
+    def test_gradient_flow(self):
+        """Pushforward returns a live tensor; backward produces nonzero grads."""
+        model = DummyIdentityModel3D()
+        model.train()
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        model.zero_grad()
+        loss = pushforward_step(
+            model, inputs, targets, dummy_loss, L=1, K=3, unroll_steps=3,
+        )
+        assert loss.grad_fn is not None
+        loss.backward()
+        assert model.scale.grad is not None
+        assert model.scale.grad.abs().item() > 0
+
+    def test_checkpointing(self):
+        """Gradient checkpointing does not change output shape."""
+        model = DummyModel3D()
+        model.train()
+        inputs = torch.randn(2, 4, 6, 16, 5)
+        targets = torch.randn(2, 4, 6, 16)
+        loss = pushforward_step(
+            model, inputs, targets, dummy_loss,
+            L=1, K=3, unroll_steps=2, use_checkpointing=True,
+        )
         assert loss.dim() == 0
 
 
@@ -178,7 +633,10 @@ class TestTeacherForcing:
 # Tests: rollout_step
 # ---------------------------------------------------------------------------
 
+
 class TestRolloutStep:
+    """Tests for rollout_step."""
+
     def test_3d_returns_scalar_loss(self):
         model = DummyModel3D()
         inputs = torch.randn(2, 4, 6, 20, 5)
@@ -199,13 +657,47 @@ class TestRolloutStep:
         )
         assert loss.dim() == 0
 
-    def test_k1_rollout(self):
-        model = DummyModel3D()
+    def test_tno(self):
+        model = DummyTNOModel3D()
         inputs = torch.randn(2, 4, 6, 20, 5)
         targets = torch.randn(2, 4, 6, 20)
         loss = rollout_step(
             model, inputs, targets, dummy_loss,
-            L=1, K=1, use_checkpointing=False,
+            L=1, K=3, use_checkpointing=False, is_tno=True,
+        )
+        assert loss.dim() == 0
+
+    def test_feedback_channel(self):
+        """Feedback channel with rollout."""
+        model = DummyFeedbackModel3D(base_channels=5)
+        inputs = torch.randn(2, 4, 6, 20, 5)
+        targets = torch.randn(2, 4, 6, 20)
+        loss = rollout_step(
+            model, inputs, targets, dummy_loss,
+            L=1, K=3, use_checkpointing=False, feedback_channel=0,
+        )
+        assert loss.dim() == 0
+
+    def test_noise(self):
+        """noise_std > 0 does not crash."""
+        model = DummyTNOModel3D()
+        inputs = torch.randn(2, 4, 6, 20, 5)
+        targets = torch.randn(2, 4, 6, 20)
+        loss = rollout_step(
+            model, inputs, targets, dummy_loss,
+            L=1, K=3, use_checkpointing=False,
+            is_tno=True, noise_std=0.05,
+        )
+        assert loss.dim() == 0
+
+    def test_stride_1(self):
+        """stride=1 with rollout processes overlapping windows."""
+        model = DummyModel3D()
+        inputs = torch.randn(2, 4, 6, 12, 5)
+        targets = torch.randn(2, 4, 6, 12)
+        loss = rollout_step(
+            model, inputs, targets, dummy_loss,
+            L=1, K=3, stride=1, use_checkpointing=False,
         )
         assert loss.dim() == 0
 
@@ -214,7 +706,10 @@ class TestRolloutStep:
 # Tests: ar_validate_full_rollout
 # ---------------------------------------------------------------------------
 
+
 class TestFullRollout:
+    """Tests for ar_validate_full_rollout."""
+
     def test_3d_output_shape(self):
         model = DummyModel3D()
         inputs = torch.randn(1, 4, 6, 16, 5)
@@ -230,207 +725,14 @@ class TestFullRollout:
         assert pred.shape == targets.shape
 
     def test_prefix_matches_gt(self):
+        """First L timesteps are copied from ground truth."""
         model = DummyModel3D()
         inputs = torch.randn(1, 4, 6, 16, 5)
         targets = torch.randn(1, 4, 6, 16)
         pred = ar_validate_full_rollout(model, inputs, targets, L=1, K=3)
         assert torch.equal(pred[:, :, :, :1], targets[:, :, :, :1])
 
-    def test_k1_full_rollout(self):
-        model = DummyModel3D()
-        inputs = torch.randn(1, 4, 6, 10, 5)
-        targets = torch.randn(1, 4, 6, 10)
-        pred = ar_validate_full_rollout(model, inputs, targets, L=1, K=1)
-        assert pred.shape == targets.shape
-
-
-# ---------------------------------------------------------------------------
-# Tests: time axis helpers
-# ---------------------------------------------------------------------------
-
-class TestTimeAxisHelpers:
-    def test_input_3d(self):
-        assert _time_axis_input(torch.randn(2, 8, 10, 24, 5)) == 3
-
-    def test_input_4d(self):
-        assert _time_axis_input(torch.randn(2, 8, 10, 6, 24, 5)) == 4
-
-    def test_target_3d(self):
-        assert _time_axis_target(torch.randn(2, 8, 10, 24)) == 3
-
-    def test_target_4d(self):
-        assert _time_axis_target(torch.randn(2, 8, 10, 6, 24)) == 4
-
-
-# ---------------------------------------------------------------------------
-# Tests: grid mode target_times in DeepONet wrappers
-# ---------------------------------------------------------------------------
-
-class DummyModel3DGrid(nn.Module):
-    """Model that accepts target_times and returns T_out = target_times length."""
-
-    def __init__(self):
-        super().__init__()
-        self.linear = nn.Linear(1, 1)
-
-    def forward(self, x, target_times=None):
-        B, H, W, T_in, C = x.shape
-        T_out = target_times.shape[0] if target_times is not None else T_in
-        return torch.zeros(B, H, W, T_out, device=x.device)
-
-
-class DummyModel4DGrid(nn.Module):
-    """Model that accepts target_times and returns T_out = target_times length."""
-
-    def __init__(self):
-        super().__init__()
-        self.linear = nn.Linear(1, 1)
-
-    def forward(self, x, target_times=None):
-        B, X, Y, Z, T_in, C = x.shape
-        T_out = target_times.shape[0] if target_times is not None else T_in
-        return torch.zeros(B, X, Y, Z, T_out, device=x.device)
-
-
-class TestGridModeTargetTimes:
-    """Test that grid mode correctly constructs (K, 3) or (K, 4) trunk inputs."""
-
-    def test_extract_target_times_returns_k_values(self):
-        """extract_target_times returns (K,) time values regardless of grid mode."""
-        x = torch.randn(2, 4, 6, 16, 5)
-        times = extract_target_times(x, t_start=5, K=3)
-        assert times.shape == (3,)
-
-    def test_3d_grid_full_mapping(self):
-        """3D wrapper with grid mode works in full-mapping (no target_times)."""
-        model = DummyModel3DGrid()
-        # Input: (B, H, W, T, C) — last 3 channels are grid_x, grid_y, grid_t
-        x = torch.randn(1, 4, 6, 10, 5)
-        pred = model(x)
-        assert pred.shape == (1, 4, 6, 10)
-
-    def test_3d_grid_with_target_times(self):
-        """3D wrapper with grid mode + target_times produces correct K output."""
-        model = DummyModel3DGrid()
-        x = torch.randn(1, 4, 6, 10, 5)
-        target_times = torch.tensor([0.1, 0.2, 0.3])  # K=3
-        pred = model(x, target_times=target_times)
-        assert pred.shape == (1, 4, 6, 3)
-
-    def test_4d_grid_with_target_times(self):
-        """4D wrapper with grid mode + target_times produces correct K output."""
-        model = DummyModel4DGrid()
-        x = torch.randn(1, 4, 6, 3, 10, 5)
-        target_times = torch.tensor([0.1, 0.2, 0.3])  # K=3
-        pred = model(x, target_times=target_times)
-        assert pred.shape == (1, 4, 6, 3, 3)
-
-    def test_3d_teacher_forcing_with_grid_model(self):
-        """Teacher forcing works with a model that accepts target_times (grid mode)."""
-        model = DummyModel3DGrid()
-        inputs = torch.randn(2, 4, 6, 16, 5)
-        targets = torch.randn(2, 4, 6, 16)
-        loss = teacher_forcing_step(model, inputs, targets, dummy_loss, L=1, K=3)
-        assert loss.dim() == 0
-
-    def test_4d_teacher_forcing_with_grid_model(self):
-        """Teacher forcing works with a 4D model that accepts target_times."""
-        model = DummyModel4DGrid()
-        inputs = torch.randn(1, 4, 6, 3, 16, 5)
-        targets = torch.randn(1, 4, 6, 3, 16)
-        loss = teacher_forcing_step(model, inputs, targets, dummy_loss, L=1, K=3)
-        assert loss.dim() == 0
-
-    def test_4d_rollout_with_grid_model(self):
-        """Rollout works with a 4D model that accepts target_times."""
-        model = DummyModel4DGrid()
-        inputs = torch.randn(1, 4, 6, 3, 20, 5)
-        targets = torch.randn(1, 4, 6, 3, 20)
-        loss = rollout_step(
-            model, inputs, targets, dummy_loss,
-            L=1, K=3, use_checkpointing=False,
-        )
-        assert loss.dim() == 0
-
-    def test_4d_full_rollout_with_grid_model(self):
-        """Full AR validation rollout works with grid model."""
-        model = DummyModel4DGrid()
-        inputs = torch.randn(1, 4, 6, 3, 16, 5)
-        targets = torch.randn(1, 4, 6, 3, 16)
-        pred = ar_validate_full_rollout(model, inputs, targets, L=1, K=3)
-        assert pred.shape == targets.shape
-
-
-# ---------------------------------------------------------------------------
-# Tests: TNO (Temporal Neural Operator) — branch2 = previous solution
-# ---------------------------------------------------------------------------
-
-class DummyTNOModel3D(nn.Module):
-    """TNO-style model: branch1=spatial features, branch2=previous solution."""
-
-    def __init__(self):
-        super().__init__()
-        self.linear = nn.Linear(1, 1)
-
-    def forward(self, x, target_times=None, x_branch2=None):
-        B, H, W, T_in, C = x.shape
-        T_out = target_times.shape[0] if target_times is not None else T_in
-        return torch.zeros(B, H, W, T_out, device=x.device)
-
-
-class DummyTNOModel4D(nn.Module):
-    """TNO-style 4D model."""
-
-    def __init__(self):
-        super().__init__()
-        self.linear = nn.Linear(1, 1)
-
-    def forward(self, x, target_times=None, x_branch2=None):
-        B, X, Y, Z, T_in, C = x.shape
-        T_out = target_times.shape[0] if target_times is not None else T_in
-        return torch.zeros(B, X, Y, Z, T_out, device=x.device)
-
-
-class TestTNO:
-    def test_3d_teacher_forcing(self):
-        model = DummyTNOModel3D()
-        inputs = torch.randn(2, 4, 6, 16, 5)
-        targets = torch.randn(2, 4, 6, 16)
-        loss = teacher_forcing_step(
-            model, inputs, targets, dummy_loss, L=1, K=3, is_tno=True,
-        )
-        assert loss.dim() == 0
-
-    def test_4d_teacher_forcing(self):
-        model = DummyTNOModel4D()
-        inputs = torch.randn(1, 4, 6, 3, 16, 5)
-        targets = torch.randn(1, 4, 6, 3, 16)
-        loss = teacher_forcing_step(
-            model, inputs, targets, dummy_loss, L=1, K=3, is_tno=True,
-        )
-        assert loss.dim() == 0
-
-    def test_3d_rollout(self):
-        model = DummyTNOModel3D()
-        inputs = torch.randn(2, 4, 6, 20, 5)
-        targets = torch.randn(2, 4, 6, 20)
-        loss = rollout_step(
-            model, inputs, targets, dummy_loss,
-            L=1, K=3, use_checkpointing=False, is_tno=True,
-        )
-        assert loss.dim() == 0
-
-    def test_4d_rollout(self):
-        model = DummyTNOModel4D()
-        inputs = torch.randn(1, 4, 6, 3, 20, 5)
-        targets = torch.randn(1, 4, 6, 3, 20)
-        loss = rollout_step(
-            model, inputs, targets, dummy_loss,
-            L=1, K=3, use_checkpointing=False, is_tno=True,
-        )
-        assert loss.dim() == 0
-
-    def test_3d_full_rollout_shape(self):
+    def test_tno_3d(self):
         model = DummyTNOModel3D()
         inputs = torch.randn(1, 4, 6, 16, 5)
         targets = torch.randn(1, 4, 6, 16)
@@ -439,7 +741,7 @@ class TestTNO:
         )
         assert pred.shape == targets.shape
 
-    def test_4d_full_rollout_shape(self):
+    def test_tno_4d(self):
         model = DummyTNOModel4D()
         inputs = torch.randn(1, 4, 6, 3, 16, 5)
         targets = torch.randn(1, 4, 6, 3, 16)
@@ -448,22 +750,148 @@ class TestTNO:
         )
         assert pred.shape == targets.shape
 
-    def test_l2_k4_teacher_forcing(self):
-        """Test L=2, K=4 — branch2 should receive 2 timesteps."""
-        model = DummyTNOModel3D()
+    def test_k_equals_1(self):
+        model = DummyModel3D()
+        inputs = torch.randn(1, 4, 6, 10, 5)
+        targets = torch.randn(1, 4, 6, 10)
+        pred = ar_validate_full_rollout(model, inputs, targets, L=1, K=1)
+        assert pred.shape == targets.shape
+
+    def test_feedback_channel(self):
+        """Feedback channel in full rollout validation."""
+        model = DummyFeedbackModel3D(base_channels=5)
+        inputs = torch.randn(1, 4, 6, 16, 5)
+        targets = torch.randn(1, 4, 6, 16)
+        pred = ar_validate_full_rollout(
+            model, inputs, targets, L=1, K=3, feedback_channel=0,
+        )
+        assert pred.shape == targets.shape
+
+
+# ---------------------------------------------------------------------------
+# Tests: _build_branch2
+# ---------------------------------------------------------------------------
+
+
+class TestBuildBranch2:
+    """Tests for _build_branch2."""
+
+    def test_non_tno_returns_none(self):
+        targets = torch.randn(2, 4, 6, 16)
+        t_ax = _time_axis_target(targets)
+        result = _build_branch2(targets, None, 0, 1, t_ax, is_tno=False)
+        assert result is None
+
+    def test_first_window_uses_gt(self):
+        """prev_pred=None returns GT slice."""
+        targets = torch.randn(2, 4, 6, 16)
+        t_ax = _time_axis_target(targets)
+        result = _build_branch2(targets, None, 0, 3, t_ax, is_tno=True)
+        expected = slice_target_window(targets, 0, 3)
+        assert torch.equal(result, expected)
+
+    def test_subsequent_uses_prev_pred(self):
+        """With prev_pred, uses the prediction instead of GT."""
+        targets = torch.randn(2, 4, 6, 16)
+        prev_pred = torch.randn(2, 4, 6, 3)
+        t_ax = _time_axis_target(targets)
+        result = _build_branch2(targets, prev_pred, 3, 3, t_ax, is_tno=True)
+        assert torch.equal(result, prev_pred)
+
+    def test_noise_applied(self):
+        """noise_std > 0 perturbs the branch2 tensor (prev_pred path only)."""
+        targets = torch.randn(2, 4, 6, 16)
+        prev_pred = torch.randn(2, 4, 6, 3)
+        t_ax = _time_axis_target(targets)
+        b2_clean = _build_branch2(
+            targets, prev_pred, 3, 3, t_ax, is_tno=True, noise_std=0.0,
+        )
+        b2_noisy = _build_branch2(
+            targets, prev_pred, 3, 3, t_ax, is_tno=True, noise_std=0.1,
+        )
+        assert torch.equal(b2_clean, prev_pred)
+        assert not torch.equal(b2_noisy, prev_pred)
+
+
+# ---------------------------------------------------------------------------
+# Tests: L=2 K=4 configurations
+# ---------------------------------------------------------------------------
+
+
+class TestL2K4Configs:
+    """Tests for L=2, K=4 configuration."""
+
+    def test_teacher_forcing(self):
+        model = DummyModel3D()
         inputs = torch.randn(2, 4, 6, 20, 5)
         targets = torch.randn(2, 4, 6, 20)
         loss = teacher_forcing_step(
-            model, inputs, targets, dummy_loss, L=2, K=4, is_tno=True,
+            model, inputs, targets, dummy_loss, L=2, K=4,
         )
         assert loss.dim() == 0
 
-    def test_non_tno_unaffected(self):
-        """is_tno=False should behave identically to before."""
-        model = DummyTNOModel3D()
-        inputs = torch.randn(2, 4, 6, 16, 5)
-        targets = torch.randn(2, 4, 6, 16)
-        loss = teacher_forcing_step(
-            model, inputs, targets, dummy_loss, L=1, K=3, is_tno=False,
+    def test_pushforward(self):
+        model = DummyModel3D()
+        model.train()
+        inputs = torch.randn(2, 4, 6, 20, 5)
+        targets = torch.randn(2, 4, 6, 20)
+        loss = pushforward_step(
+            model, inputs, targets, dummy_loss,
+            L=2, K=4, unroll_steps=3,
         )
         assert loss.dim() == 0
+
+    def test_rollout(self):
+        model = DummyModel3D()
+        inputs = torch.randn(2, 4, 6, 20, 5)
+        targets = torch.randn(2, 4, 6, 20)
+        loss = rollout_step(
+            model, inputs, targets, dummy_loss,
+            L=2, K=4, use_checkpointing=False,
+        )
+        assert loss.dim() == 0
+
+    def test_full_rollout(self):
+        model = DummyModel3D()
+        inputs = torch.randn(1, 4, 6, 20, 5)
+        targets = torch.randn(1, 4, 6, 20)
+        pred = ar_validate_full_rollout(model, inputs, targets, L=2, K=4)
+        assert pred.shape == targets.shape
+
+
+# ---------------------------------------------------------------------------
+# Tests: edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestEdgeCases:
+    """Edge cases: trajectory too short, single window, empty rollout."""
+
+    def test_trajectory_too_short(self):
+        """total_T <= L yields no windows and zero loss."""
+        model = DummyModel3D()
+        inputs = torch.randn(2, 4, 6, 1, 5)
+        targets = torch.randn(2, 4, 6, 1)
+        loss = teacher_forcing_step(
+            model, inputs, targets, dummy_loss, L=1, K=3,
+        )
+        assert loss.item() == 0.0
+
+    def test_single_window(self):
+        """total_T = L + K produces exactly one window."""
+        model = DummyModel3D()
+        inputs = torch.randn(2, 4, 6, 4, 5)
+        targets = torch.randn(2, 4, 6, 4)
+        loss = teacher_forcing_step(
+            model, inputs, targets, dummy_loss, L=1, K=3,
+        )
+        assert loss.dim() == 0
+
+    def test_empty_rollout(self):
+        """Full rollout with too-short trajectory returns zeros_like."""
+        model = DummyModel3D()
+        inputs = torch.randn(1, 4, 6, 1, 5)
+        targets = torch.randn(1, 4, 6, 1)
+        pred = ar_validate_full_rollout(model, inputs, targets, L=1, K=3)
+        assert pred.shape == targets.shape
+        assert torch.equal(pred, torch.zeros_like(targets))
