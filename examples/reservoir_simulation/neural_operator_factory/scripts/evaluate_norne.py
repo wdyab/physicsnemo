@@ -23,9 +23,23 @@ Supports two evaluation modes:
   autoregressive: Roll out step-by-step (L context -> K predicted),
                   matching the XMGN autoregressive inference protocol.
 
+Automatically detects TNO variant and feedback-channel usage from the
+saved checkpoint config so you don't need to specify them manually.
+
 Usage:
-    python scripts/evaluate_norne.py --mode full_mapping
-    python scripts/evaluate_norne.py --mode autoregressive --L 1 --K 3
+    # Pressure evaluation (auto-detect model variant from checkpoint)
+    python scripts/evaluate_norne.py --variable pressure
+or  sbatch eval_norne.sbatch pressure
+
+    # Saturation (SWAT)
+    python scripts/evaluate_norne.py --variable swat
+or  sbatch eval_norne.sbatch swat
+
+    # Custom checkpoint + mode
+    python scripts/evaluate_norne.py --checkpoint path/to/model.pth --mode autoregressive --L 1 --K 3
+    CHECKPOINT=checkpoints/best_model_swat_deeponet3d_tno_spatial.pth sbatch eval_norne.sbatch swat
+
+    NORMALIZE=0 sbatch eval_norne.sbatch pressure
 """
 
 import sys
@@ -177,9 +191,14 @@ def main():
         "--data_path", type=str,
         default="/lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne",
     )
-    parser.add_argument("--input_file", type=str, default="norne_test_input.pt")
-    parser.add_argument("--output_file", type=str, default="norne_test_swat.pt")
-    parser.add_argument("--variable", type=str, default="SWAT")
+    parser.add_argument("--input_file", type=str, default="norne_{mode}_a.pt",
+                        help="Input file pattern ({mode} replaced with train/val/test)")
+    parser.add_argument("--output_file", type=str, default=None,
+                        help="Output file pattern. If not set, inferred from --variable: "
+                             "pressure->norne_{mode}_pressure.pt, swat->norne_{mode}_swat.pt, sgas->norne_{mode}_sgas.pt")
+    parser.add_argument("--variable", type=str, default="pressure",
+                        choices=["pressure", "swat", "sgas"],
+                        help="Variable to evaluate (default: pressure)")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--tno", action="store_true", help="TNO mode: feed predictions back as branch2")
     parser.add_argument("--mask", action="store_true", help="Auto-detect ACTNUM and evaluate on active cells only")
@@ -196,6 +215,15 @@ def main():
              "Metrics are reported on denormalized (physical) values.",
     )
     args = parser.parse_args()
+
+    # Infer output file from variable if not explicitly set
+    VARIABLE_FILE_MAP = {
+        "pressure": "norne_{mode}_pressure.pt",
+        "swat": "norne_{mode}_swat.pt",
+        "sgas": "norne_{mode}_sgas.pt",
+    }
+    if args.output_file is None:
+        args.output_file = VARIABLE_FILE_MAP.get(args.variable, f"norne_{{mode}}_{args.variable}.pt")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -214,6 +242,12 @@ def main():
     checkpoint = torch.load(ckpt_path, map_location=device)
     model_config = checkpoint["model_config"]
 
+    # Auto-detect TNO variant and feedback channel from checkpoint
+    is_tno = model_config.get("variant", "") == "tno"
+    feedback_channel = model_config.get("feedback_channel", None)
+    if args.tno:
+        is_tno = True  # CLI override
+
     print("=" * 70)
     print("NEURAL OPERATOR FACTORY - NORNE EVALUATION")
     print("=" * 70)
@@ -225,7 +259,7 @@ def main():
     print(f"Mode:        {args.mode}")
     if args.mode == "autoregressive":
         print(f"  L={args.L}, K={args.K}")
-        total_steps = (65 - args.L) // args.K
+        total_steps = "unknown (determined from data)"
         print(f"  AR steps to cover trajectory: ~{total_steps}")
     print()
 
@@ -287,6 +321,9 @@ def main():
     print(f"Input shape:   {tuple(sample_x.shape)}")
     print(f"Output shape:  {tuple(sample_y.shape)}")
     print(f"Timesteps:     {num_timesteps}")
+    if args.mode == "autoregressive":
+        actual_ar_steps = (num_timesteps - args.L) // args.K
+        print(f"AR steps:      {actual_ar_steps} (from {num_timesteps} timesteps, L={args.L}, K={args.K})")
     print()
 
     # -- Model --
@@ -315,7 +352,8 @@ def main():
                 pred_batch = ar_validate_full_rollout(
                     model, x_batch, y_batch_dev,
                     L=args.L, K=args.K,
-                    is_tno=args.tno,
+                    is_tno=is_tno,
+                    feedback_channel=feedback_channel,
                 )
 
                 all_predictions.append(pred_batch.cpu().numpy())

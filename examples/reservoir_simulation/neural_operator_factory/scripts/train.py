@@ -153,8 +153,11 @@ from utils.co2_normalization import dnorm_dP
 from data.validation import validate_batch_dimensions, print_validation_summary
 from training.ar_utils import (
     teacher_forcing_step,
+    pushforward_step,
     rollout_step,
     ar_validate_full_rollout,
+    get_training_stage,
+    compute_unroll_steps,
 )
 
 # Registry of denormalization functions that can be selected via config.
@@ -628,17 +631,29 @@ def main(cfg: DictConfig) -> None:
         ar_cfg = cfg.training.autoregressive
         ar_L = ar_cfg.input_window
         ar_K = ar_cfg.output_window
+        ar_stride = ar_cfg.get("stride", None)
         tf_epochs = ar_cfg.teacher_forcing_epochs
-        ro_epochs = ar_cfg.rollout_epochs
-        total_epochs = tf_epochs + ro_epochs
+        pf_epochs = ar_cfg.get("pushforward_epochs", 0)
+        ro_epochs = ar_cfg.get("rollout_epochs", 0)
+        total_epochs = tf_epochs + pf_epochs + ro_epochs
         ar_checkpointing = ar_cfg.gradient_checkpointing
+        ar_noise_std = ar_cfg.get("noise_std", 0.0)
+        ar_feedback = ar_cfg.get("use_feedback_channel", False)
+        ar_max_unroll = ar_cfg.get("max_unroll", ar_cfg.get("pushforward_max_unroll", 5))
+        ar_lr_reset = ar_cfg.get("lr_reset_factor", 1.0)
 
         if dist.rank == 0:
             logger.info("=" * 80)
             logger.info(f"AUTOREGRESSIVE TRAINING | L={ar_L}, K={ar_K}")
-            logger.info(f"  Stage 1 — Teacher Forcing: {tf_epochs} epochs")
-            logger.info(f"  Stage 2 — Rollout (full trajectory): {ro_epochs} epochs")
+            logger.info(f"  Stage 1 — Teacher Forcing:  {tf_epochs} epochs")
+            if pf_epochs > 0:
+                logger.info(f"  Stage 2 — Pushforward:      {pf_epochs} epochs (unroll 1 -> {ar_max_unroll})")
+            logger.info(f"  Stage 3 — Rollout:          {ro_epochs} epochs")
             logger.info(f"  Total: {total_epochs} epochs")
+            if ar_noise_std > 0:
+                logger.info(f"  Noise: std={ar_noise_std}")
+            if ar_feedback:
+                logger.info(f"  Feedback channel: enabled")
             logger.info("=" * 80)
     else:
         total_epochs = cfg.training.epochs
@@ -667,22 +682,32 @@ def main(cfg: DictConfig) -> None:
                 optimizer.zero_grad()
 
                 if regime == "autoregressive":
-                    # Determine stage: teacher forcing or rollout
-                    is_rollout_stage = epoch > tf_epochs
-                    if is_rollout_stage:
-                        loss = rollout_step(
+                    stage = get_training_stage(epoch, tf_epochs, pf_epochs, ro_epochs)
+                    ar_common = dict(
+                        L=ar_L, K=ar_K, spatial_mask=static_mask,
+                        is_tno=is_tno, noise_std=ar_noise_std,
+                        feedback_channel=1 if ar_feedback else None,
+                        stride=ar_stride,
+                    )
+                    if stage == "teacher_forcing":
+                        loss = teacher_forcing_step(
+                            model, inputs, targets, loss_fn, **ar_common,
+                        )
+                    elif stage == "pushforward":
+                        unroll = compute_unroll_steps(
+                            epoch, tf_epochs + 1, pf_epochs, ar_max_unroll,
+                        )
+                        loss = pushforward_step(
                             model, inputs, targets, loss_fn,
-                            L=ar_L, K=ar_K,
+                            unroll_steps=unroll,
                             use_checkpointing=ar_checkpointing,
-                            spatial_mask=static_mask,
-                            is_tno=is_tno,
+                            **ar_common,
                         )
                     else:
-                        loss = teacher_forcing_step(
+                        loss = rollout_step(
                             model, inputs, targets, loss_fn,
-                            L=ar_L, K=ar_K,
-                            spatial_mask=static_mask,
-                            is_tno=is_tno,
+                            use_checkpointing=ar_checkpointing,
+                            **ar_common,
                         )
                 else:
                     # Full-mapping: single forward pass over entire trajectory
@@ -726,13 +751,21 @@ def main(cfg: DictConfig) -> None:
 
             avg_train_loss = total_loss / len(train_loader)
 
-            # Log stage info for AR
-            if regime == "autoregressive" and dist.rank == 0:
-                stage_name = "ROLLOUT" if epoch > tf_epochs else "TEACHER-FORCING"
-                if epoch == tf_epochs + 1:
-                    logger.info("=" * 40)
-                    logger.info("Switching to ROLLOUT stage")
-                    logger.info("=" * 40)
+            # Log stage transitions and LR reset for AR
+            if regime == "autoregressive":
+                stage = get_training_stage(epoch, tf_epochs, pf_epochs, ro_epochs)
+                prev_stage = get_training_stage(epoch - 1, tf_epochs, pf_epochs, ro_epochs) if epoch > 1 else None
+                if prev_stage is not None and stage != prev_stage:
+                    if ar_lr_reset != 1.0:
+                        for pg in optimizer.param_groups:
+                            pg["lr"] *= ar_lr_reset
+                    if dist.rank == 0:
+                        new_lr = optimizer.param_groups[0]["lr"]
+                        logger.info("=" * 60)
+                        logger.info(f"STAGE TRANSITION: {prev_stage.upper().replace('_', ' ')} -> {stage.upper().replace('_', ' ')} (LR={new_lr:.2e})")
+                        if stage == "pushforward":
+                            logger.info(f"  Pushforward curriculum: unroll 1 -> {ar_max_unroll} over {pf_epochs} epochs")
+                        logger.info("=" * 60)
 
             log.log_epoch({"loss": avg_train_loss})
 
@@ -756,6 +789,7 @@ def main(cfg: DictConfig) -> None:
                             pred = ar_validate_full_rollout(
                                 model, inputs, targets, L=ar_L, K=ar_K,
                                 is_tno=is_tno,
+                                feedback_channel=1 if ar_feedback else None,
                             )
                         else:
                             pred = model(inputs)
