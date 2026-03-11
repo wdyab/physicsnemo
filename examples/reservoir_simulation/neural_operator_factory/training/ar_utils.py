@@ -423,6 +423,7 @@ def pushforward_step(
     is_tno: bool = False,
     noise_std: float = 0.0,
     feedback_channel: Optional[int] = None,
+    stride: Optional[int] = None,
 ) -> Tensor:
     """Pushforward training step with gradient flow through the unrolled chain.
 
@@ -430,12 +431,13 @@ def pushforward_step(
     so gradients flow through the entire sequence.  Returns a *live* tensor
     (with grad) -- the caller must call ``.backward()``.
     """
+    effective_stride = stride if stride is not None else K
     total_T = targets.shape[_time_axis_target(targets)]
     t_ax = _time_axis_target(targets)
 
     if total_T <= L:
         return torch.tensor(0.0, device=inputs.device)
-    max_windows = (total_T - L - K) // K + 1
+    max_windows = (total_T - L - K) // effective_stride + 1
     if max_windows <= 0:
         return torch.tensor(0.0, device=inputs.device)
 
@@ -474,7 +476,7 @@ def pushforward_step(
         accumulated_loss = accumulated_loss + window_loss
 
         prev_pred = pred
-        current_t += K
+        current_t += effective_stride
 
     return accumulated_loss / steps
 

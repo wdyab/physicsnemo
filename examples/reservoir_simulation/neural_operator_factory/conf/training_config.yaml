@@ -20,14 +20,25 @@ data:
   
   data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne #/lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
   
-  # File naming (supports {mode} placeholder for train/val/test)
-  # Option 1: CO2 convention - set variable, leave input_file/output_file null
-  # Option 2: Custom files - set input_file and output_file patterns
-  variable: pressure           # 'pressure' or 'saturation' (CO2 dataset)
-  input_file: norne_{mode}_input.pt               # e.g., 'norne_{mode}_input.pt' for custom datasets
-  output_file: norne_{mode}_pressure.pt              # e.g., 'norne_{mode}_output.pt' for custom datasets
-  
-  normalize: true               # z-score normalize inputs/outputs (true for pressure, false for saturation)
+  # Variable name — used for checkpoint naming and metric selection, not file resolution.
+  # Choices: 'pressure', 'saturation'
+  variable: saturation
+
+  # Input/output file patterns ({mode} is replaced with train/val/test).
+  # Available Norne dataset files:
+  #   Inputs:  norne_{mode}_a.pt  (or symlink norne_{mode}_input.pt)
+  #   Outputs: norne_{mode}_pressure.pt  (pressure, single channel)
+  #            norne_{mode}_swat.pt      (water saturation, single channel)
+  #            norne_{mode}_sgas.pt      (gas saturation, single channel)
+  #            norne_{mode}_u.pt         (all 3 channels — requires multi-output support)
+  # For CO2 dataset: set input_file/output_file to null and use variable instead
+  #   (resolves to dP_{mode}_a.pt / dP_{mode}_u.pt or sg_* automatically)
+  input_file: norne_{mode}_a.pt
+  output_file: norne_{mode}_swat.pt
+
+  # z-score normalize inputs and outputs.
+  # Recommended: true for pressure (large dynamic range), false for saturation (bounded [0,1]).
+  normalize: false
   num_workers: 2
 
   # ---------------------------------------------------------------------------
@@ -78,7 +89,7 @@ training:
     # K: number of timesteps the model predicts per forward pass.
     # DeepONet/TNO: any K value works (temporal bundling via trunk queries).
     # xFNO: requires L + K >= 2 * time_modes for proper spectral resolution.
-    output_window: 3
+    output_window: 5
 
     # Stage 1 -- Teacher Forcing: model always sees ground-truth input.
     # Teaches the underlying physics from clean signals.
@@ -88,7 +99,7 @@ training:
     # Gradually increases unroll length (curriculum) to bridge the gap
     # between teacher forcing and free-running rollout.
     # Set to 0 to skip this stage and go directly to rollout.
-    pushforward_epochs: 30
+    pushforward_epochs: 50
 
     # Stage 3 -- Rollout: free-running autoregressive sweep (detached feedback).
     # Each window sees the model's own (detached) predictions,
