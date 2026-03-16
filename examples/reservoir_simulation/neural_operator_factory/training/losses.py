@@ -17,123 +17,131 @@
 """
 Unified loss functions for reservoir simulation modeling.
 
-Available base losses:
-- mse: Mean Squared Error (L2 loss)
-- l1: Mean Absolute Error (L1 loss)
-- relative_l2: Relative L2 loss (scale-invariant)
+Data-fitting losses: mse, l1, relative_l2, huber
+Regularisation:      spatial derivative constraints (dimension-agnostic)
+Physics losses:      mass conservation (and future additions)
 
-Optional features:
-- Masking: Apply loss only on active reservoir regions (irregular domains)
-- Derivative: Add physics-informed spatial derivative constraints
+All losses work with 2D spatial (B, H, W, T) and 3D spatial (B, X, Y, Z, T)
+predictions, both full-mapping and autoregressive regimes.
 """
+
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+from training.physics_losses import (
+    build_physics_losses,
+    get_deriv_map,
+    cell_centre_distance,
+    central_difference,
+    extract_grid_widths_for_axis,
+)
+
+
+# ---------------------------------------------------------------------------
+# Standalone convenience loss
+# ---------------------------------------------------------------------------
 
 
 class SimpleRelativeL2Loss(nn.Module):
-    """
-    Simple Relative L2 Loss - No masking, no derivatives, no complications.
+    """Relative L2 loss without bells and whistles.
 
-    Formula:
-        loss = ||pred - target||_2 / ||target||_2
-
-    Where ||.||_2 is the L2 norm (Frobenius norm for tensors).
-    This is computed per sample and then averaged across the batch.
+    loss = mean_b( ||pred_b - target_b||_2 / (||target_b||_2 + eps) )
     """
 
-    def __init__(self):
-        super(SimpleRelativeL2Loss, self).__init__()
+    def __init__(self, eps: float = 1e-8):
+        super().__init__()
+        self.eps = eps
 
-    def forward(
-        self,
-        predictions: torch.Tensor,
-        targets: torch.Tensor,
-        inputs: torch.Tensor = None,
-    ) -> torch.Tensor:
-        """
-        Compute simple relative L2 loss.
-
-        Args:
-            predictions: Model predictions (B, H, W, T)
-            targets: Ground truth (B, H, W, T)
-            inputs: Unused (kept for compatibility with loss function interface)
-
-        Returns:
-            Scalar loss value
-        """
+    def forward(self, predictions, targets, inputs=None, **kwargs):
         batch_size = predictions.shape[0]
+        pred_flat = predictions.reshape(batch_size, -1)
+        target_flat = targets.reshape(batch_size, -1)
+        diff_norm = torch.norm(pred_flat - target_flat, p=2, dim=1)
+        target_norm = torch.norm(target_flat, p=2, dim=1)
+        return (diff_norm / (target_norm + self.eps)).mean()
 
-        # Flatten spatial dimensions for each sample
-        pred_flat = predictions.reshape(batch_size, -1)  # (B, H*W*T)
-        target_flat = targets.reshape(batch_size, -1)  # (B, H*W*T)
 
-        # Compute L2 norm of difference and target for each sample
-        diff_norm = torch.norm(pred_flat - target_flat, p=2, dim=1)  # (B,)
-        target_norm = torch.norm(target_flat, p=2, dim=1)  # (B,)
-
-        # Relative L2 loss per sample
-        relative_loss = diff_norm / target_norm  # (B,)
-
-        # Average across batch
-        return relative_loss.mean()
+# ---------------------------------------------------------------------------
+# Unified loss
+# ---------------------------------------------------------------------------
 
 
 class UnifiedLoss(nn.Module):
-    """Unified loss function with configurable base loss, masking, and derivatives.
+    """Configurable loss with data-fitting, derivative, and physics terms.
 
-    This flexible loss function supports:
-    1. Multiple base losses (MSE, L1, Relative L2)
-    2. Optional masking for irregular domains
-    3. Optional physics-informed derivative constraints (CO2 dataset only)
+    total = sum(w_i * data_loss_i)
+          + derivative.weight * derivative_loss
+          + sum(alpha_j * physics_loss_j)
 
-    Formula:
-        loss = sum(w_i * loss_i(pred, target)) [+ derivative_weight * derivative_loss]
+    Data-fitting losses
+    -------------------
+    mse : Mean Squared Error, mean((pred - target)^2).
+        Standard regression loss. Penalises large errors quadratically.
+    l1 : Mean Absolute Error, mean(|pred - target|).
+        More robust to outliers than MSE. Linear penalty.
+    relative_l2 : ||pred - target||_2 / (||target||_2 + eps), per sample.
+        Scale-invariant; recommended when output magnitude varies across
+        samples (e.g. pressure with large dynamic range).
+    huber : Smooth L1 / Huber loss (controlled by ``huber_delta``).
+        Behaves like MSE for errors < delta and L1 for errors > delta.
+        Combines MSE precision near zero with L1 robustness for outliers.
+
+    Spatial derivative regularization
+    ---------------------------------
+    Penalises differences in spatial gradients between pred and target
+    using central finite differences on the NOF grid-width channels.
+    Configured via ``derivative_config`` with keys:
+
+    - ``enabled`` (bool): toggle on/off.
+    - ``weight`` (float): multiplier for the derivative term.
+    - ``dims`` (list of str): which spatial directions to differentiate.
+      2D data: ``dx`` (W/horizontal), ``dy`` (H/vertical).
+      3D data: ``dx`` (X), ``dy`` (Y), ``dz`` (Z).
+    - ``metric`` (str or None): loss metric for comparing derivatives.
+      ``None`` inherits the first entry in ``types``.
+
+    Masking
+    -------
+    When ``spatial_mask`` is provided (boolean tensor over spatial dims),
+    MSE, L1, and Huber average only over active cells. relative_l2
+    zeros out inactive cells before computing norms.
 
     Parameters
     ----------
     types : list of str
-        Loss types to combine: 'mse', 'l1', 'relative_l2'
+        Data loss types.
     weights : list of float
-        Corresponding weights for each loss type
-    use_derivative : bool, optional
-        Add derivative regularization (CO2 dataset only), by default False
-    derivative_weight : float, optional
-        Weight for derivative term, by default 0.5
-    derivative_dim : str or list of str, optional
-        Direction(s) for derivative: 'dx', 'dz', or ['dx', 'dz'], by default 'dx'
-    eps : float, optional
-        Epsilon for numerical stability, by default 1e-6
-    reduction : str, optional
-        Reduction method: 'mean', 'sum', or 'none', by default 'mean'
-
-    Example
-    -------
-    >>> loss_fn = UnifiedLoss(types=['l1'], weights=[1.0])
-    >>> loss_fn = UnifiedLoss(types=['l1', 'mse'], weights=[1.0, 0.5])
-    >>> loss_fn = UnifiedLoss(types=['relative_l2'], weights=[1.0], use_derivative=True)
-
-    Note
-    ----
-    - Spatial masking is via the spatial_mask parameter in forward(), not a constructor arg
-    - Derivative features are CO2-specific (hardcoded 2D spatial grid spacing extraction)
+        Weights for each data loss type.
+    huber_delta : float
+        Transition threshold for Huber loss.
+    derivative_config : dict or None
+        Derivative regularization settings (see above).
+    eps : float
+        Epsilon for numerical stability (relative_l2 denominator).
+    reduction : str
+        'mean', 'sum', or 'none'.
+    physics_losses : dict or None
+        Pre-built physics losses: ``{name: (module, weight)}``.
+        Built by :func:`training.physics_losses.build_physics_losses`.
     """
 
-    VALID_TYPES = {"mse", "l1", "relative_l2"}
+    VALID_TYPES = {"mse", "l1", "relative_l2", "huber"}
 
     def __init__(
         self,
         types=None,
         weights=None,
-        use_derivative: bool = False,
-        derivative_weight: float = 0.5,
-        derivative_dim="dx",
+        huber_delta: float = 1.0,
+        derivative_config=None,
         eps: float = 1e-6,
         reduction: str = "mean",
+        physics_losses=None,
     ):
         super().__init__()
 
-        # Default to single relative_l2
         if types is None:
             types = ["relative_l2"]
         if isinstance(types, str):
@@ -150,217 +158,209 @@ class UnifiedLoss(nn.Module):
             raise ValueError(
                 f"types and weights must have same length, got {len(types)} vs {len(weights)}"
             )
-
         for t in types:
             if t not in self.VALID_TYPES:
                 raise ValueError(
                     f"Loss type must be one of {self.VALID_TYPES}, got '{t}'"
                 )
-        if reduction not in ["mean", "sum", "none"]:
+        if reduction not in ("mean", "sum", "none"):
             raise ValueError(
-                f"reduction must be 'mean', 'sum', or 'none', got {reduction}"
+                f"reduction must be 'mean', 'sum', or 'none', got '{reduction}'"
             )
-
-        # Normalize derivative_dim to list format
-        if isinstance(derivative_dim, str):
-            derivative_dims = [derivative_dim]
-        elif isinstance(derivative_dim, list):
-            derivative_dims = derivative_dim
-        else:
-            raise ValueError(
-                f"derivative_dim must be str or list of str, got {type(derivative_dim)}"
-            )
-
-        # Validate derivative dimensions
-        for dim in derivative_dims:
-            if dim not in ["dx", "dz"]:
-                raise ValueError(
-                    f"derivative_dim values must be 'dx' or 'dz', got {dim}"
-                )
 
         self.loss_types = types
         self.loss_weights = weights
-        self.use_derivative = use_derivative
-        self.derivative_weight = derivative_weight
-        self.derivative_dims = derivative_dims
+        self.huber_delta = huber_delta
         self.eps = eps
         self.reduction = reduction
 
-        # Grid spacings (extracted from data)
-        self.grid_spacings = {}
+        # Derivative config
+        self._deriv_cfg = derivative_config or {}
+        self._deriv_enabled = self._deriv_cfg.get("enabled", False)
+        self._deriv_weight = float(self._deriv_cfg.get("weight", 0.5))
+        self._deriv_dims: List[str] = list(self._deriv_cfg.get("dims", ["dx"]))
+        self._deriv_metric: Optional[str] = self._deriv_cfg.get("metric", None)
 
-    def _compute_single_loss(
-        self, pred: torch.Tensor, target: torch.Tensor, loss_type: str
-    ) -> torch.Tensor:
-        """Compute a single loss term."""
+        # Physics losses
+        self._physics_losses: Dict[str, tuple] = physics_losses or {}
+        for name, (mod, _w) in self._physics_losses.items():
+            self.add_module(f"physics_{name}", mod)
+
+    # -----------------------------------------------------------------------
+    # Data losses
+    # -----------------------------------------------------------------------
+
+    def _apply_mask(self, tensor, spatial_mask):
+        """Return only active-cell values, or full tensor if no mask."""
+        if spatial_mask is None:
+            return tensor
+        mask_expanded = spatial_mask.unsqueeze(0).unsqueeze(-1).expand_as(tensor)
+        return tensor[mask_expanded]
+
+    def _compute_single_loss(self, pred, target, loss_type, spatial_mask=None):
         if loss_type == "mse":
-            loss = (pred - target) ** 2
+            diff = (pred - target) ** 2
+            diff = self._apply_mask(diff, spatial_mask)
+            return diff.mean() if self.reduction == "mean" else diff.sum()
+
         elif loss_type == "l1":
-            loss = torch.abs(pred - target)
+            diff = torch.abs(pred - target)
+            diff = self._apply_mask(diff, spatial_mask)
+            return diff.mean() if self.reduction == "mean" else diff.sum()
+
+        elif loss_type == "huber":
+            diff = F.smooth_l1_loss(
+                pred, target, reduction="none", beta=self.huber_delta
+            )
+            diff = self._apply_mask(diff, spatial_mask)
+            return diff.mean() if self.reduction == "mean" else diff.sum()
+
         elif loss_type == "relative_l2":
+            if spatial_mask is not None:
+                mask_exp = spatial_mask.unsqueeze(0).unsqueeze(-1).expand_as(pred)
+                pred = pred * mask_exp
+                target = target * mask_exp
             batch_size = pred.shape[0]
             pred_flat = pred.reshape(batch_size, -1)
             target_flat = target.reshape(batch_size, -1)
             diff_norm = torch.norm(pred_flat - target_flat, p=2, dim=1)
             target_norm = torch.norm(target_flat, p=2, dim=1)
-            loss = diff_norm / target_norm
+            loss = diff_norm / (target_norm + self.eps)
+            return loss.mean() if self.reduction == "mean" else loss.sum()
 
-        if self.reduction == "mean":
-            return loss.mean()
-        elif self.reduction == "sum":
-            return loss.sum()
-        return loss
+        raise ValueError(f"Unknown loss type: {loss_type}")
 
-    def _compute_base_loss(
-        self, pred: torch.Tensor, target: torch.Tensor
-    ) -> torch.Tensor:
-        """Compute weighted sum of all base loss terms."""
+    def _compute_base_loss(self, pred, target, spatial_mask=None):
         total = torch.tensor(0.0, device=pred.device)
         for loss_type, weight in zip(self.loss_types, self.loss_weights):
-            total = total + weight * self._compute_single_loss(pred, target, loss_type)
+            total = total + weight * self._compute_single_loss(
+                pred, target, loss_type, spatial_mask
+            )
         return total
 
-    def _extract_grid_spacing(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Extract grid spacing from input data.
+    # -----------------------------------------------------------------------
+    # Derivative regularisation (dimension-agnostic)
+    # -----------------------------------------------------------------------
 
-        The 12 input channels are: [kr, kz, porosity, inj_loc, inj_rate, pressure,
-        temperature, Swi, Lam, grid_x, grid_y, grid_t]
-        Channel -3 = grid_x (spatial coordinates)
+    def _compute_derivative_loss(self, pred, target, inputs, spatial_mask=None):
+        """Compute derivative loss along each configured direction.
 
-        Parameters
-        ----------
-        inputs : torch.Tensor
-            Input data of shape (batch, H, W, T, C) where C=12
-            H = height dimension (96), W = width dimension (200)
-
-        Returns
-        -------
-        torch.Tensor
-            Grid spacing of shape (1, 1, W-2, 1) for broadcasting with (B, H, W-2, T)
+        For each direction in self._deriv_dims:
+        1. Extract cell widths from the input channels
+        2. Compute cell-centre distances
+        3. Compute central-difference derivatives of pred and target
+        4. Compare using the configured metric
         """
-        # Extract grid_x values along WIDTH dimension: [batch 0, height 0, all widths, time 0, channel -3]
-        grid_x = inputs[0, 0, :, 0, -3]  # (W=200,) - extract grid_x channel values
-        grid_dx = grid_x[1:-1] + grid_x[:-2] / 2 + grid_x[2:] / 2  # (W-2=198,)
-        grid_dx = grid_dx[
-            None, None, :, None
-        ]  # (1, 1, 198, 1) for broadcasting with (B, H, W-2, T)
+        ndim = pred.dim()
+        spatial_ndim = ndim - 2  # subtract batch and time
+        if spatial_ndim not in (2, 3):
+            raise ValueError(
+                f"Derivative loss requires 2 or 3 spatial dims, got {spatial_ndim}"
+            )
 
-        return grid_dx
+        deriv_metric = self._deriv_metric or self.loss_types[0]
+        total = torch.tensor(0.0, device=pred.device)
 
-    def _compute_derivative(
-        self, field: torch.Tensor, grid_dx: torch.Tensor
-    ) -> torch.Tensor:
-        """Compute spatial derivative using central finite differences.
+        for dim_name in self._deriv_dims:
+            dmap = get_deriv_map(spatial_ndim)
+            if dim_name not in dmap:
+                valid = list(dmap.keys())
+                raise ValueError(
+                    f"Derivative dim '{dim_name}' not valid for {spatial_ndim}D data. Valid: {valid}"
+                )
+            tensor_axis, _ch_offset = dmap[dim_name]
 
+            widths = extract_grid_widths_for_axis(inputs, spatial_ndim, dim_name)
+            spacing = cell_centre_distance(widths)
 
-        Parameters
-        ----------
-        field : torch.Tensor
-            Input field of shape (batch, H=96, W=200, T=24)
-        grid_dx : torch.Tensor
-            Grid spacing of shape (1, 1, W-2=198, 1)
+            dy_pred = central_difference(pred, tensor_axis, spacing)
+            dy_target = central_difference(target, tensor_axis, spacing)
 
-        Returns
-        -------
-        torch.Tensor
-            Derivative field of shape (batch, H=96, W-2=198, T=24)
-        """
-        # Compute derivative in WIDTH direction (dimension 2)
-        derivative = (field[:, :, 2:, :] - field[:, :, :-2, :]) / grid_dx
+            # Trim mask to match reduced axis size if needed
+            deriv_mask = None
+            if spatial_mask is not None:
+                n_orig = spatial_mask.shape[tensor_axis - 1]
+                deriv_mask = spatial_mask.narrow(tensor_axis - 1, 1, n_orig - 2)
 
-        return derivative
+            total = total + self._compute_single_loss(
+                dy_pred, dy_target, deriv_metric, spatial_mask=deriv_mask
+            )
 
-    def forward(
-        self,
-        pred: torch.Tensor,
-        target: torch.Tensor,
-        inputs: torch.Tensor = None,
-        spatial_mask: torch.Tensor = None,
-    ) -> torch.Tensor:
+        return total / max(len(self._deriv_dims), 1)
+
+    # -----------------------------------------------------------------------
+    # Forward
+    # -----------------------------------------------------------------------
+
+    def forward(self, pred, target, inputs=None, spatial_mask=None):
         """Compute unified loss.
 
         Parameters
         ----------
-        pred : torch.Tensor
-            Predicted values of shape (batch, H, W, T)
-        target : torch.Tensor
-            Target values of shape (batch, H, W, T)
-        inputs : torch.Tensor, optional
-            Input data of shape (batch, H, W, T, C) - required if use_mask=True or use_derivative=True
-
-        Returns
-        -------
-        torch.Tensor
-            Loss value
+        pred : Tensor
+            (B, H, W, T) or (B, X, Y, Z, T)
+        target : Tensor
+            Same shape as pred.
+        inputs : Tensor or None
+            (B, *spatial, T, C). Required for derivative and physics losses.
+        spatial_mask : Tensor or None
+            (*spatial) boolean mask; active cells = True/1.
         """
-        # Validate inputs
-        if self.use_derivative and inputs is None:
-            raise ValueError(
-                "inputs must be provided when use_derivative=True"
+        if self._deriv_enabled and inputs is None:
+            raise ValueError("inputs required when derivative loss is enabled")
+
+        # 1. Data loss
+        data_loss = self._compute_base_loss(pred, target, spatial_mask)
+
+        # 2. Derivative loss
+        if self._deriv_enabled:
+            deriv_loss = self._compute_derivative_loss(
+                pred, target, inputs, spatial_mask
             )
+            data_loss = data_loss + self._deriv_weight * deriv_loss
 
-        batch_size = pred.shape[0]
-
-        # Apply spatial_mask: zero out inactive cells before loss computation
-        if spatial_mask is not None:
-            mask_expanded = spatial_mask.unsqueeze(0).unsqueeze(-1).expand_as(pred)
-            pred = pred * mask_expanded
-            target = target * mask_expanded
-
-        # Compute base loss (weighted sum of all loss terms)
-        data_loss = self._compute_base_loss(pred, target)
-
-        # Add derivative loss if enabled (CO2 dataset only)
-        if self.use_derivative:
-            grid_dx = self._extract_grid_spacing(inputs).to(pred.device)
-            dy_pred = self._compute_derivative(pred, grid_dx)
-            dy_target = self._compute_derivative(target, grid_dx)
-            der_loss = self._compute_single_loss(dy_pred, dy_target, self.loss_types[0])
-            return data_loss + self.derivative_weight * der_loss
+        # 3. Physics losses
+        for _name, (mod, weight) in self._physics_losses.items():
+            phys = mod(pred, target, inputs, spatial_mask=spatial_mask)
+            data_loss = data_loss + weight * phys
 
         return data_loss
 
 
-def get_loss_function(loss_config):
-    """Factory function to create loss function from config.
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
 
-    Parameters
-    ----------
-    loss_config : DictConfig or dict
-        Loss configuration with fields:
-        - types: list of str, loss types (e.g. ['l1', 'mse'])
-        - weights: list of float, corresponding weights
-        - use_derivative: bool, CO2-only derivative regularization
-        - derivative_weight: float, weight for derivative term
-        - derivative_dim: str or list, direction(s) for derivatives
-        - reduction: str, reduction method ('mean', 'sum', 'none')
 
-    Returns
-    -------
-    UnifiedLoss
-        Configured loss function
-    """
+def get_loss_function(loss_config, variable=None):
+    """Create a UnifiedLoss from a Hydra config."""
     types = loss_config.get("types", ["relative_l2"])
     weights = loss_config.get("weights", None)
 
-    # Convert OmegaConf lists to Python lists
     if hasattr(types, "__iter__") and not isinstance(types, str):
         types = list(types)
     if weights is not None and hasattr(weights, "__iter__"):
         weights = list(weights)
 
+    # Derivative config
+    deriv_cfg = loss_config.get("derivative", None)
+    derivative_config = dict(deriv_cfg) if deriv_cfg is not None else {"enabled": False}
+
+    # Physics losses
+    physics_cfg = loss_config.get("physics", None)
+    physics_losses = build_physics_losses(physics_cfg, variable=variable)
+
     return UnifiedLoss(
         types=types,
         weights=weights,
-        use_derivative=loss_config.get("use_derivative", False),
-        derivative_weight=loss_config.get("derivative_weight", 0.5),
-        derivative_dim=loss_config.get("derivative_dim", "dx"),
-        eps=loss_config.get("eps", 1e-6),
+        huber_delta=float(loss_config.get("huber_delta", 1.0)),
+        derivative_config=derivative_config,
+        eps=float(loss_config.get("eps", 1e-6)),
         reduction=loss_config.get("reduction", "mean"),
+        physics_losses=physics_losses,
     )
 
 
-# For convenience, export main class and factory
 __all__ = [
     "SimpleRelativeL2Loss",
     "UnifiedLoss",

@@ -30,6 +30,10 @@ from training.losses import (
     UnifiedLoss,
     get_loss_function,
 )
+from training.physics_losses import (
+    MassConservationLoss,
+    build_physics_losses,
+)
 from training.metrics import (
     mean_relative_error,
     mean_plume_error,
@@ -61,6 +65,9 @@ __all__ = [
     "SimpleRelativeL2Loss",
     "UnifiedLoss",
     "get_loss_function",
+    # Physics losses
+    "MassConservationLoss",
+    "build_physics_losses",
     # Metrics
     "mean_relative_error",
     "mean_plume_error",

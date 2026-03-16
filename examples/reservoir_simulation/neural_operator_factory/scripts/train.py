@@ -39,27 +39,28 @@ from models.xfno import UFNONet, FNO4DNet
 from models.physicsnemo_unet import StandaloneUNet
 from models.xdeeponet import DeepONetWrapper, DeepONet3DWrapper
 
+
 def print_model_architecture(model, model_type: str, dimensions: str, cfg, logger):
     """Print detailed model architecture for any model type."""
     logger.info("=" * 80)
     logger.info("MODEL ARCHITECTURE")
     logger.info("=" * 80)
-    
+
     # Get the actual model (unwrap DDP if needed)
-    if hasattr(model, 'module'):
+    if hasattr(model, "module"):
         actual_model = model.module
     else:
         actual_model = model
-    
+
     # Print model type and dimensions
     logger.info(f"Dimensions: {dimensions.upper()}")
     logger.info(f"Model Type: {model_type.upper()}")
-    
+
     if model_type == "xdeeponet":
         variant = cfg.arch.xdeeponet.get("variant", "u_deeponet")
         logger.info(f"Variant: {variant}")
         logger.info("")
-        
+
         # Branch configuration
         branch1_cfg = cfg.arch.xdeeponet.get("branch1", {})
         logger.info(f"Branch 1:")
@@ -69,62 +70,74 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
         logger.info(f"  UNet Layers: {branch1_cfg.get('num_unet_layers', 0)}")
         logger.info(f"  Conv Layers: {branch1_cfg.get('num_conv_layers', 0)}")
         logger.info(f"  Activation: {branch1_cfg.get('activation_fn', 'sin')}")
-        
-        if variant in ['mionet', 'fourier_mionet']:
+
+        if variant in ["mionet", "fourier_mionet"]:
             branch2_cfg = cfg.arch.xdeeponet.get("branch2", {})
             logger.info(f"Branch 2:")
             logger.info(f"  Type: {branch2_cfg.get('encoder', 'mlp')}")
             logger.info(f"  In Features: auto (inferred from input)")
             logger.info(f"  Activation: {branch2_cfg.get('activation_fn', 'relu')}")
-        
+
         # Trunk configuration
         trunk_cfg = cfg.arch.xdeeponet.get("trunk", {})
-        trunk_input = trunk_cfg.get('input_type', 'time')
-        in_features = (4 if dimensions == '4d' else 3) if trunk_input == 'grid' else 1
-        coord_desc = 'x,y,z,t' if dimensions == '4d' else 'x,y,t'
+        trunk_input = trunk_cfg.get("input_type", "time")
+        in_features = (4 if dimensions == "4d" else 3) if trunk_input == "grid" else 1
+        coord_desc = "x,y,z,t" if dimensions == "4d" else "x,y,t"
         logger.info(f"Trunk:")
-        logger.info(f"  Input Type: {trunk_input} ({coord_desc if trunk_input == 'grid' else 'just t'})")
+        logger.info(
+            f"  Input Type: {trunk_input} ({coord_desc if trunk_input == 'grid' else 'just t'})"
+        )
         logger.info(f"  In Features: {in_features}")
         logger.info(f"  Hidden Width: {trunk_cfg.get('hidden_width', 128)}")
         logger.info(f"  Num Layers: {trunk_cfg.get('num_layers', 6)}")
         logger.info(f"  Activation: {trunk_cfg.get('activation_fn', 'sin')}")
-        
+
         # Decoder configuration
         logger.info(f"Decoder:")
         logger.info(f"  Type: {cfg.arch.xdeeponet.get('decoder_type', 'mlp')}")
         logger.info(f"  Width: {cfg.arch.xdeeponet.get('decoder_width', 128)}")
         logger.info(f"  Layers: {cfg.arch.xdeeponet.get('decoder_layers', 2)}")
-        logger.info(f"  Activation: {cfg.arch.xdeeponet.get('decoder_activation_fn', 'relu')}")
-        
+        logger.info(
+            f"  Activation: {cfg.arch.xdeeponet.get('decoder_activation_fn', 'relu')}"
+        )
+
         logger.info(f"Latent Width: {cfg.arch.xdeeponet.get('width', 64)}")
         logger.info(f"Padding: {cfg.arch.xdeeponet.get('padding', 8)}")
-        
+
     elif model_type == "xfno":
         xfno_cfg = cfg.arch.xfno
         logger.info(f"Out Channels: {xfno_cfg.out_channels}")
         logger.info(f"Width: {xfno_cfg.width}")
-        if dimensions == '4d':
-            logger.info(f"Modes: ({xfno_cfg.modes1}, {xfno_cfg.modes2}, {xfno_cfg.modes3}, {xfno_cfg.modes4})")
+        if dimensions == "4d":
+            logger.info(
+                f"Modes: ({xfno_cfg.modes1}, {xfno_cfg.modes2}, {xfno_cfg.modes3}, {xfno_cfg.modes4})"
+            )
         else:
-            logger.info(f"Modes: ({xfno_cfg.modes1}, {xfno_cfg.modes2}, {xfno_cfg.modes3})")
+            logger.info(
+                f"Modes: ({xfno_cfg.modes1}, {xfno_cfg.modes2}, {xfno_cfg.modes3})"
+            )
         logger.info(f"FNO Layers: {xfno_cfg.num_fno_layers}")
-        if dimensions == '3d':
+        if dimensions == "3d":
             logger.info(f"U-Net Layers: {xfno_cfg.num_unet_layers}")
             logger.info(f"Conv Layers: {xfno_cfg.num_conv_layers}")
-            logger.info(f"Lifting: type={xfno_cfg.lifting_type}, layers={xfno_cfg.lifting_layers}")
+            logger.info(
+                f"Lifting: type={xfno_cfg.lifting_type}, layers={xfno_cfg.lifting_layers}"
+            )
         else:
             logger.info(f"Coord Features: {xfno_cfg.coord_features}")
         logger.info(f"Activation: {xfno_cfg.activation_fn}")
-        logger.info(f"Decoder: layers={xfno_cfg.decoder_layers}, width={xfno_cfg.decoder_width}")
-    
+        logger.info(
+            f"Decoder: layers={xfno_cfg.decoder_layers}, width={xfno_cfg.decoder_width}"
+        )
+
     # Print full model structure
     logger.info("")
     logger.info("Full Model Structure:")
     logger.info("-" * 80)
-    for line in str(actual_model).split('\n'):
+    for line in str(actual_model).split("\n"):
         logger.info(line)
     logger.info("-" * 80)
-    
+
     # Count parameters per component
     logger.info("")
     logger.info("Parameter Counts:")
@@ -165,9 +178,11 @@ _DENORM_REGISTRY = {
     "dnorm_dP": dnorm_dP,
 }
 
+
 # Registry of validation metric functions (numpy-based, operate on flat arrays).
 def _rmse_np(y_pred, y_true):
     return float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+
 
 _METRIC_REGISTRY = {
     "rmse": ("RMSE", "val_rmse", _rmse_np),
@@ -236,7 +251,7 @@ def main(cfg: DictConfig) -> None:
 
     # Get dimensions from config (used for model selection and data validation)
     expected_dimensions = cfg.arch.dimensions.lower()
-    
+
     train_loader, val_loader, test_loader = create_dataloaders(
         data_path=cfg.data.data_path,
         batch_size=cfg.training.batch_size,
@@ -258,8 +273,10 @@ def main(cfg: DictConfig) -> None:
 
     # Detect TNO variant
     regime = cfg.training.get("regime", "full_mapping").lower()
-    is_tno = (cfg.arch.model.lower() == "xdeeponet" and
-              cfg.arch.xdeeponet.get("variant", "") == "tno")
+    is_tno = (
+        cfg.arch.model.lower() == "xdeeponet"
+        and cfg.arch.xdeeponet.get("variant", "") == "tno"
+    )
     if is_tno:
         if regime != "autoregressive":
             raise ValueError("TNO variant requires regime: autoregressive")
@@ -281,9 +298,11 @@ def main(cfg: DictConfig) -> None:
         sample_inputs, sample_targets = next(iter(train_loader))
 
         # Validate using centralized validation function
-        validation_info = validate_batch_dimensions(sample_inputs, sample_targets, cfg.data.get("variable", "unknown"))
+        validation_info = validate_batch_dimensions(
+            sample_inputs, sample_targets, cfg.data.get("variable", "unknown")
+        )
         detected_dimensions = validation_info["dimensions"]
-        
+
         # Check that detected dimensions match config
         if detected_dimensions != expected_dimensions:
             raise ValueError(
@@ -305,14 +324,14 @@ def main(cfg: DictConfig) -> None:
     # Create model based on dimensions and model type
     dimensions = cfg.arch.dimensions.lower()
     model_type = cfg.arch.model.lower()
-    
+
     # Get in_channels from first batch (for auto-discovery)
     sample_inputs, _ = next(iter(train_loader))
     in_channels = sample_inputs.shape[-1]  # Last dimension is channels
 
     if model_type == "xfno":
         xfno_cfg = cfg.arch.xfno
-        
+
         if dimensions == "4d":
             # 4D FNO (3D spatial + time) - Pure FNO only
             logger.info(
@@ -384,12 +403,16 @@ def main(cfg: DictConfig) -> None:
     elif model_type == "xdeeponet":
         xdeeponet_cfg = cfg.arch.xdeeponet
         variant = xdeeponet_cfg.variant
-        
+
         # Build branch configs from yaml
         branch1_config = dict(xdeeponet_cfg.branch1)
-        branch2_config = dict(xdeeponet_cfg.branch2) if variant in ['mionet', 'fourier_mionet', 'tno'] else None
+        branch2_config = (
+            dict(xdeeponet_cfg.branch2)
+            if variant in ["mionet", "fourier_mionet", "tno"]
+            else None
+        )
         trunk_config = dict(xdeeponet_cfg.trunk)
-        
+
         if dimensions == "4d":
             # 4D DeepONet (3D spatial + time)
             logger.info(
@@ -406,9 +429,13 @@ def main(cfg: DictConfig) -> None:
                 decoder_type=xdeeponet_cfg.get("decoder_type", "mlp"),
                 decoder_width=xdeeponet_cfg.decoder_width,
                 decoder_layers=xdeeponet_cfg.decoder_layers,
-                decoder_activation_fn=xdeeponet_cfg.get("decoder_activation_fn", "relu"),
+                decoder_activation_fn=xdeeponet_cfg.get(
+                    "decoder_activation_fn", "relu"
+                ),
             ).to(dist.device)
-            model_arch_name = f"deeponet3d_{variant}_{branch1_config.get('encoder', 'spatial')}"
+            model_arch_name = (
+                f"deeponet3d_{variant}_{branch1_config.get('encoder', 'spatial')}"
+            )
         else:
             # 3D DeepONet (2D spatial + time)
             logger.info(
@@ -425,9 +452,13 @@ def main(cfg: DictConfig) -> None:
                 decoder_type=xdeeponet_cfg.get("decoder_type", "mlp"),
                 decoder_width=xdeeponet_cfg.decoder_width,
                 decoder_layers=xdeeponet_cfg.decoder_layers,
-                decoder_activation_fn=xdeeponet_cfg.get("decoder_activation_fn", "relu"),
+                decoder_activation_fn=xdeeponet_cfg.get(
+                    "decoder_activation_fn", "relu"
+                ),
             ).to(dist.device)
-            model_arch_name = f"deeponet_{variant}_{branch1_config.get('encoder', 'spatial')}"
+            model_arch_name = (
+                f"deeponet_{variant}_{branch1_config.get('encoder', 'spatial')}"
+            )
 
     else:
         raise ValueError(f"Unknown model: {model_type}. Use 'xfno' or 'xdeeponet'.")
@@ -476,26 +507,29 @@ def main(cfg: DictConfig) -> None:
         print_model_architecture(model, model_type, dimensions, cfg, logger)
 
     # Create training loss function
-    loss_fn = get_loss_function(cfg.loss)
+    loss_fn = get_loss_function(cfg.loss, variable=cfg.data.get("variable", None))
 
     # Create validation loss function (same as training loss for fair comparison)
     from omegaconf import DictConfig
 
-    # Validation loss: same base losses, no derivatives
-    val_loss_cfg = DictConfig({
-        "types": list(cfg.loss.types),
-        "weights": list(cfg.loss.weights),
-        "use_derivative": False,
-        "reduction": cfg.loss.get("reduction", "mean"),
-    })
+    # Validation loss: same base losses, no derivatives, no physics losses
+    val_loss_cfg = DictConfig(
+        {
+            "types": list(cfg.loss.types),
+            "weights": list(cfg.loss.weights),
+            "reduction": cfg.loss.get("reduction", "mean"),
+        }
+    )
     val_loss_fn = get_loss_function(val_loss_cfg)
 
     # Print loss info (only on rank 0)
     if dist.rank == 0:
-        types_str = "+".join(f"{w}*{t}" for t, w in zip(cfg.loss.types, cfg.loss.weights))
+        types_str = "+".join(
+            f"{w}*{t}" for t, w in zip(cfg.loss.types, cfg.loss.weights)
+        )
         loss_info = f"Train Loss: {types_str}"
-        if cfg.loss.get("use_derivative", False):
-            loss_info += f" (+Derivative w={cfg.loss.derivative_weight})"
+        if cfg.loss.get("derivative", {}).get("enabled", False):
+            loss_info += f" (+Derivative w={cfg.loss.derivative.weight}, dims={list(cfg.loss.derivative.dims)})"
         logger.info(loss_info)
 
     # Create optimizer and scheduler
@@ -547,25 +581,27 @@ def main(cfg: DictConfig) -> None:
             "optimizer": "Adam",
             "train_loss": "+".join(list(cfg.loss.types)),
             "loss_masking": cfg.data.get("mask_enabled", False),
-            "loss_derivative": cfg.loss.get("use_derivative", False),
+            "loss_derivative": cfg.loss.get("derivative", {}).get("enabled", False),
             "use_amp": cfg.training.use_amp,
             "use_graphs": cfg.training.use_graphs,
             "variable": cfg.data.variable,
             "trainable_parameters": trainable_params,
             "in_channels": in_channels,
         }
-        
+
         if model_type == "xfno":
             xfno_cfg = cfg.arch.xfno
-            mlflow_params.update({
-                "width": xfno_cfg.width,
-                "modes1": xfno_cfg.modes1,
-                "modes2": xfno_cfg.modes2,
-                "modes3": xfno_cfg.modes3,
-                "num_fno_layers": xfno_cfg.num_fno_layers,
-                "padding": xfno_cfg.padding,
-                "activation_fn": xfno_cfg.activation_fn,
-            })
+            mlflow_params.update(
+                {
+                    "width": xfno_cfg.width,
+                    "modes1": xfno_cfg.modes1,
+                    "modes2": xfno_cfg.modes2,
+                    "modes3": xfno_cfg.modes3,
+                    "num_fno_layers": xfno_cfg.num_fno_layers,
+                    "padding": xfno_cfg.padding,
+                    "activation_fn": xfno_cfg.activation_fn,
+                }
+            )
             if dimensions == "4d":
                 mlflow_params["modes4"] = xfno_cfg.modes4
             else:
@@ -573,13 +609,15 @@ def main(cfg: DictConfig) -> None:
                 mlflow_params["num_conv_layers"] = xfno_cfg.num_conv_layers
         elif model_type == "xdeeponet":
             xdeeponet_cfg = cfg.arch.xdeeponet
-            mlflow_params.update({
-                "variant": xdeeponet_cfg.variant,
-                "width": xdeeponet_cfg.width,
-                "padding": xdeeponet_cfg.padding,
-                "branch1_type": xdeeponet_cfg.branch1.type,
-            })
-        
+            mlflow_params.update(
+                {
+                    "variant": xdeeponet_cfg.variant,
+                    "width": xdeeponet_cfg.width,
+                    "padding": xdeeponet_cfg.padding,
+                    "branch1_type": xdeeponet_cfg.branch1.type,
+                }
+            )
+
         mlflow.log_params(mlflow_params)
 
     # Setup checkpointing (make absolute path since chdir=False)
@@ -639,7 +677,9 @@ def main(cfg: DictConfig) -> None:
         ar_checkpointing = ar_cfg.gradient_checkpointing
         ar_noise_std = ar_cfg.get("noise_std", 0.0)
         ar_feedback = ar_cfg.get("use_feedback_channel", False)
-        ar_max_unroll = ar_cfg.get("max_unroll", ar_cfg.get("pushforward_max_unroll", 5))
+        ar_max_unroll = ar_cfg.get(
+            "max_unroll", ar_cfg.get("pushforward_max_unroll", 5)
+        )
         ar_lr_reset = ar_cfg.get("lr_reset_factor", 1.0)
 
         if dist.rank == 0:
@@ -647,7 +687,9 @@ def main(cfg: DictConfig) -> None:
             logger.info(f"AUTOREGRESSIVE TRAINING | L={ar_L}, K={ar_K}")
             logger.info(f"  Stage 1 — Teacher Forcing:  {tf_epochs} epochs")
             if pf_epochs > 0:
-                logger.info(f"  Stage 2 — Pushforward:      {pf_epochs} epochs (unroll 1 -> {ar_max_unroll})")
+                logger.info(
+                    f"  Stage 2 — Pushforward:      {pf_epochs} epochs (unroll 1 -> {ar_max_unroll})"
+                )
             logger.info(f"  Stage 3 — Rollout:          {ro_epochs} epochs")
             logger.info(f"  Total: {total_epochs} epochs")
             if ar_noise_std > 0:
@@ -684,28 +726,44 @@ def main(cfg: DictConfig) -> None:
                 if regime == "autoregressive":
                     stage = get_training_stage(epoch, tf_epochs, pf_epochs, ro_epochs)
                     ar_common = dict(
-                        L=ar_L, K=ar_K, spatial_mask=static_mask,
-                        is_tno=is_tno, noise_std=ar_noise_std,
+                        L=ar_L,
+                        K=ar_K,
+                        spatial_mask=static_mask,
+                        is_tno=is_tno,
+                        noise_std=ar_noise_std,
                         feedback_channel=1 if ar_feedback else None,
                         stride=ar_stride,
                     )
                     if stage == "teacher_forcing":
                         loss = teacher_forcing_step(
-                            model, inputs, targets, loss_fn, **ar_common,
+                            model,
+                            inputs,
+                            targets,
+                            loss_fn,
+                            **ar_common,
                         )
                     elif stage == "pushforward":
                         unroll = compute_unroll_steps(
-                            epoch, tf_epochs + 1, pf_epochs, ar_max_unroll,
+                            epoch,
+                            tf_epochs + 1,
+                            pf_epochs,
+                            ar_max_unroll,
                         )
                         loss = pushforward_step(
-                            model, inputs, targets, loss_fn,
+                            model,
+                            inputs,
+                            targets,
+                            loss_fn,
                             unroll_steps=unroll,
                             use_checkpointing=ar_checkpointing,
                             **ar_common,
                         )
                     else:
                         loss = rollout_step(
-                            model, inputs, targets, loss_fn,
+                            model,
+                            inputs,
+                            targets,
+                            loss_fn,
                             use_checkpointing=ar_checkpointing,
                             **ar_common,
                         )
@@ -714,7 +772,9 @@ def main(cfg: DictConfig) -> None:
                     if cfg.training.use_amp:
                         with autocast():
                             pred = model(inputs)
-                            loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
+                            loss = loss_fn(
+                                pred, targets, inputs, spatial_mask=static_mask
+                            )
                         scaler.scale(loss).backward()
                         scaler.step(optimizer)
                         scaler.update()
@@ -754,7 +814,11 @@ def main(cfg: DictConfig) -> None:
             # Log stage transitions and LR reset for AR
             if regime == "autoregressive":
                 stage = get_training_stage(epoch, tf_epochs, pf_epochs, ro_epochs)
-                prev_stage = get_training_stage(epoch - 1, tf_epochs, pf_epochs, ro_epochs) if epoch > 1 else None
+                prev_stage = (
+                    get_training_stage(epoch - 1, tf_epochs, pf_epochs, ro_epochs)
+                    if epoch > 1
+                    else None
+                )
                 if prev_stage is not None and stage != prev_stage:
                     if ar_lr_reset != 1.0:
                         for pg in optimizer.param_groups:
@@ -762,9 +826,13 @@ def main(cfg: DictConfig) -> None:
                     if dist.rank == 0:
                         new_lr = optimizer.param_groups[0]["lr"]
                         logger.info("=" * 60)
-                        logger.info(f"STAGE TRANSITION: {prev_stage.upper().replace('_', ' ')} -> {stage.upper().replace('_', ' ')} (LR={new_lr:.2e})")
+                        logger.info(
+                            f"STAGE TRANSITION: {prev_stage.upper().replace('_', ' ')} -> {stage.upper().replace('_', ' ')} (LR={new_lr:.2e})"
+                        )
                         if stage == "pushforward":
-                            logger.info(f"  Pushforward curriculum: unroll 1 -> {ar_max_unroll} over {pf_epochs} epochs")
+                            logger.info(
+                                f"  Pushforward curriculum: unroll 1 -> {ar_max_unroll} over {pf_epochs} epochs"
+                            )
                         logger.info("=" * 60)
 
             log.log_epoch({"loss": avg_train_loss})
@@ -787,7 +855,11 @@ def main(cfg: DictConfig) -> None:
                         # Forward pass — same regime as training
                         if regime == "autoregressive":
                             pred = ar_validate_full_rollout(
-                                model, inputs, targets, L=ar_L, K=ar_K,
+                                model,
+                                inputs,
+                                targets,
+                                L=ar_L,
+                                K=ar_K,
                                 is_tno=is_tno,
                                 feedback_channel=1 if ar_feedback else None,
                             )
@@ -796,9 +868,13 @@ def main(cfg: DictConfig) -> None:
 
                         if cfg.training.use_amp:
                             with autocast():
-                                val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
+                                val_loss = val_loss_fn(
+                                    pred, targets, inputs, spatial_mask=static_mask
+                                )
                         else:
-                            val_loss = val_loss_fn(pred, targets, inputs, spatial_mask=static_mask)
+                            val_loss = val_loss_fn(
+                                pred, targets, inputs, spatial_mask=static_mask
+                            )
 
                         # Aggregate validation loss across GPUs
                         if dist.world_size > 1:
@@ -836,7 +912,11 @@ def main(cfg: DictConfig) -> None:
                                 )
                             _, _, metric_fn = _METRIC_REGISTRY[val_metric_choice]
 
-                            mask_np = static_mask.cpu().numpy() if static_mask is not None else None
+                            mask_np = (
+                                static_mask.cpu().numpy()
+                                if static_mask is not None
+                                else None
+                            )
 
                             for i in range(pred_denorm.shape[0]):
                                 if mask_np is not None:
@@ -925,50 +1005,68 @@ def main(cfg: DictConfig) -> None:
 
                         if model_type == "xfno":
                             xfno_cfg = cfg.arch.xfno
-                            model_config.update({
-                                "out_channels": xfno_cfg.out_channels,
-                                "width": xfno_cfg.width,
-                                "modes1": xfno_cfg.modes1,
-                                "modes2": xfno_cfg.modes2,
-                                "modes3": xfno_cfg.modes3,
-                                "num_fno_layers": xfno_cfg.num_fno_layers,
-                                "padding": xfno_cfg.padding,
-                                "activation_fn": xfno_cfg.activation_fn,
-                                "decoder_layers": xfno_cfg.decoder_layers,
-                                "decoder_width": xfno_cfg.decoder_width,
-                            })
+                            model_config.update(
+                                {
+                                    "out_channels": xfno_cfg.out_channels,
+                                    "width": xfno_cfg.width,
+                                    "modes1": xfno_cfg.modes1,
+                                    "modes2": xfno_cfg.modes2,
+                                    "modes3": xfno_cfg.modes3,
+                                    "num_fno_layers": xfno_cfg.num_fno_layers,
+                                    "padding": xfno_cfg.padding,
+                                    "activation_fn": xfno_cfg.activation_fn,
+                                    "decoder_layers": xfno_cfg.decoder_layers,
+                                    "decoder_width": xfno_cfg.decoder_width,
+                                }
+                            )
                             if dimensions == "4d":
-                                model_config.update({
-                                    "modes4": xfno_cfg.modes4,
-                                    "coord_features": xfno_cfg.coord_features,
-                                    "lifting_layers": xfno_cfg.lifting_layers,
-                                })
+                                model_config.update(
+                                    {
+                                        "modes4": xfno_cfg.modes4,
+                                        "coord_features": xfno_cfg.coord_features,
+                                        "lifting_layers": xfno_cfg.lifting_layers,
+                                    }
+                                )
                             else:
-                                model_config.update({
-                                    "num_unet_layers": xfno_cfg.num_unet_layers,
-                                    "num_conv_layers": xfno_cfg.num_conv_layers,
-                                    "unet_type": xfno_cfg.unet_type,
-                                    "lifting_type": xfno_cfg.lifting_type,
-                                    "lifting_layers": xfno_cfg.lifting_layers,
-                                    "lifting_width": xfno_cfg.lifting_width,
-                                    "decoder_type": xfno_cfg.decoder_type,
-                                })
+                                model_config.update(
+                                    {
+                                        "num_unet_layers": xfno_cfg.num_unet_layers,
+                                        "num_conv_layers": xfno_cfg.num_conv_layers,
+                                        "unet_type": xfno_cfg.unet_type,
+                                        "lifting_type": xfno_cfg.lifting_type,
+                                        "lifting_layers": xfno_cfg.lifting_layers,
+                                        "lifting_width": xfno_cfg.lifting_width,
+                                        "decoder_type": xfno_cfg.decoder_type,
+                                    }
+                                )
 
                         elif model_type == "xdeeponet":
                             xdeeponet_cfg = cfg.arch.xdeeponet
-                            model_config.update({
-                                "variant": xdeeponet_cfg.variant,
-                                "width": xdeeponet_cfg.width,
-                                "padding": xdeeponet_cfg.padding,
-                                "branch1_config": dict(xdeeponet_cfg.branch1),
-                                "trunk_config": dict(xdeeponet_cfg.trunk),
-                                "decoder_type": xdeeponet_cfg.get("decoder_type", "mlp"),
-                                "decoder_width": xdeeponet_cfg.decoder_width,
-                                "decoder_layers": xdeeponet_cfg.decoder_layers,
-                                "decoder_activation_fn": xdeeponet_cfg.get("decoder_activation_fn", "relu"),
-                            })
-                            if xdeeponet_cfg.variant in ['mionet', 'fourier_mionet', 'tno']:
-                                model_config["branch2_config"] = dict(xdeeponet_cfg.branch2)
+                            model_config.update(
+                                {
+                                    "variant": xdeeponet_cfg.variant,
+                                    "width": xdeeponet_cfg.width,
+                                    "padding": xdeeponet_cfg.padding,
+                                    "branch1_config": dict(xdeeponet_cfg.branch1),
+                                    "trunk_config": dict(xdeeponet_cfg.trunk),
+                                    "decoder_type": xdeeponet_cfg.get(
+                                        "decoder_type", "mlp"
+                                    ),
+                                    "decoder_width": xdeeponet_cfg.decoder_width,
+                                    "decoder_layers": xdeeponet_cfg.decoder_layers,
+                                    "decoder_activation_fn": xdeeponet_cfg.get(
+                                        "decoder_activation_fn", "relu"
+                                    ),
+                                }
+                            )
+                            if xdeeponet_cfg.variant in [
+                                "mionet",
+                                "fourier_mionet",
+                                "tno",
+                            ]:
+                                model_config["branch2_config"] = dict(
+                                    xdeeponet_cfg.branch2
+                                )
 
                         torch.save(
                             {
