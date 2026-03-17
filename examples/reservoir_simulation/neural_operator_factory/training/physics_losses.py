@@ -107,20 +107,25 @@ def get_deriv_map(spatial_ndim: int) -> Dict[str, Tuple[int, int]]:
     return _DERIV_MAP_2D if spatial_ndim == 2 else _DERIV_MAP_3D
 
 
-def cell_centre_distance(cell_widths: Tensor) -> Tensor:
+def cell_centre_distance(cell_widths: Tensor, min_spacing: float = 1e-6) -> Tensor:
     """Distance between centres of cell i and cell i+2.
 
     d[i] = cell_widths[i]/2 + cell_widths[i+1] + cell_widths[i+2]/2
 
+    A minimum floor is applied to prevent division-by-zero when grid
+    widths are zero (e.g. inactive cells) or very small (normalized data).
+
     Parameters
     ----------
     cell_widths : Tensor  shape (N,)
+    min_spacing : float   floor value for the output
 
     Returns
     -------
     Tensor  shape (N-2,)
     """
-    return cell_widths[:-2] / 2.0 + cell_widths[1:-1] + cell_widths[2:] / 2.0
+    d = cell_widths[:-2] / 2.0 + cell_widths[1:-1] + cell_widths[2:] / 2.0
+    return d.clamp(min=min_spacing)
 
 
 def central_difference(field: Tensor, axis: int, spacing: Tensor) -> Tensor:

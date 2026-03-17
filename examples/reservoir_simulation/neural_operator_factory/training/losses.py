@@ -242,24 +242,50 @@ class UnifiedLoss(nn.Module):
     # Derivative regularisation (dimension-agnostic)
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _detect_active_cells(target):
+        """Auto-detect active cells from the target tensor.
+
+        A cell is considered inactive if its value is exactly zero across
+        all timesteps (last dim).  Returns a boolean mask over spatial
+        dims, or None if all cells are active or none are active.
+        """
+        active = target[0].abs().sum(dim=-1) != 0  # (*spatial)
+        if active.all() or not active.any():
+            return None
+        return active
+
     def _compute_derivative_loss(self, pred, target, inputs, spatial_mask=None):
         """Compute derivative loss along each configured direction.
 
-        For each direction in self._deriv_dims:
-        1. Extract cell widths from the input channels
-        2. Compute cell-centre distances
-        3. Compute central-difference derivatives of pred and target
-        4. Compare using the configured metric
+        Handles inactive cells robustly: if no explicit spatial_mask is
+        provided, auto-detects inactive cells from the target (cells that
+        are zero across all timesteps).  Then:
+        1. Zeros out inactive cells before differentiation
+        2. Builds a stencil-safe derivative mask requiring all three
+           stencil cells (i, i+1, i+2) to be active
         """
         ndim = pred.dim()
-        spatial_ndim = ndim - 2  # subtract batch and time
+        spatial_ndim = ndim - 2
         if spatial_ndim not in (2, 3):
             raise ValueError(
                 f"Derivative loss requires 2 or 3 spatial dims, got {spatial_ndim}"
             )
 
+        # Use explicit mask if provided, otherwise auto-detect from target
+        active_mask = spatial_mask
+        if active_mask is None:
+            active_mask = self._detect_active_cells(target)
+
         deriv_metric = self._deriv_metric or self.loss_types[0]
         total = torch.tensor(0.0, device=pred.device)
+
+        # Zero out inactive cells before computing derivatives so the
+        # stencil does not mix active and inactive values.
+        if active_mask is not None:
+            mask_exp = active_mask.unsqueeze(0).unsqueeze(-1).expand_as(pred)
+            pred = pred * mask_exp
+            target = target * mask_exp
 
         for dim_name in self._deriv_dims:
             dmap = get_deriv_map(spatial_ndim)
@@ -276,11 +302,16 @@ class UnifiedLoss(nn.Module):
             dy_pred = central_difference(pred, tensor_axis, spacing)
             dy_target = central_difference(target, tensor_axis, spacing)
 
-            # Trim mask to match reduced axis size if needed
+            # Stencil-safe mask: valid only when cells i, i+1, and i+2
+            # along the derivative axis are all active.
             deriv_mask = None
-            if spatial_mask is not None:
-                n_orig = spatial_mask.shape[tensor_axis - 1]
-                deriv_mask = spatial_mask.narrow(tensor_axis - 1, 1, n_orig - 2)
+            if active_mask is not None:
+                mask_axis = tensor_axis - 1  # active_mask has no batch dim
+                n = active_mask.shape[mask_axis]
+                m_left = active_mask.narrow(mask_axis, 0, n - 2)
+                m_centre = active_mask.narrow(mask_axis, 1, n - 2)
+                m_right = active_mask.narrow(mask_axis, 2, n - 2)
+                deriv_mask = m_left & m_centre & m_right
 
             total = total + self._compute_single_loss(
                 dy_pred, dy_target, deriv_metric, spatial_mask=deriv_mask

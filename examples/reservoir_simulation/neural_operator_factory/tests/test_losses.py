@@ -368,6 +368,110 @@ class TestDerivativeLoss3D:
             fn(torch.randn(B, H, W, T), torch.randn(B, H, W, T), inputs)
 
 
+class TestDerivativeWithMask:
+    """Tests for derivative loss with spatial masking (Norne-like sparse grids)."""
+
+    def test_derivative_with_sparse_mask_no_nan(self):
+        """Derivative loss must not produce NaN on grids with many inactive cells."""
+        B, X, Y, Z, T, C = 1, 10, 12, 4, 3, 11
+        dx = torch.tensor([10.0, 20.0, 15.0, 10.0, 25.0, 30.0, 10.0, 20.0, 15.0, 10.0])
+        dy = torch.ones(Y) * 5.0
+        dz = torch.ones(Z) * 8.0
+        inputs = _make_3d_inputs(B, X, Y, Z, T, C, dx=dx, dy=dy, dz=dz)
+        target = torch.randn(B, X, Y, Z, T)
+        pred = target + 0.1 * torch.randn_like(target)
+
+        # Sparse mask: only 30% active (similar to Norne's 39%)
+        mask = torch.zeros(X, Y, Z, dtype=torch.bool)
+        mask[2:5, 3:8, :] = True
+
+        fn = UnifiedLoss(
+            types=["relative_l2"],
+            derivative_config={"enabled": True, "weight": 0.5, "dims": ["dx"]},
+        )
+        loss = fn(pred, target, inputs, spatial_mask=mask)
+        assert not torch.isnan(loss), f"Loss is NaN with sparse mask"
+        assert not torch.isinf(loss), f"Loss is Inf with sparse mask"
+
+    def test_derivative_all_dims_with_mask(self):
+        """All 3D derivative directions work with masking."""
+        B, X, Y, Z, T, C = 1, 8, 10, 4, 2, 11
+        inputs = _make_3d_inputs(B, X, Y, Z, T, C)
+        target = torch.randn(B, X, Y, Z, T)
+        pred = target + 0.05 * torch.randn_like(target)
+
+        mask = torch.zeros(X, Y, Z, dtype=torch.bool)
+        mask[1:6, 2:8, 1:3] = True
+
+        fn = UnifiedLoss(
+            types=["relative_l2"],
+            derivative_config={
+                "enabled": True,
+                "weight": 0.5,
+                "dims": ["dx", "dy", "dz"],
+            },
+        )
+        loss = fn(pred, target, inputs, spatial_mask=mask)
+        assert not torch.isnan(loss)
+
+    def test_derivative_auto_detects_inactive_no_mask(self):
+        """Derivative loss auto-detects inactive cells even without spatial_mask."""
+        B, X, Y, Z, T, C = 1, 8, 10, 4, 3, 11
+        inputs = _make_3d_inputs(B, X, Y, Z, T, C)
+        target = torch.randn(B, X, Y, Z, T)
+        # Make some cells inactive (zero across all timesteps)
+        target[:, :3, :, :, :] = 0.0
+        pred = target + 0.1 * torch.randn_like(target)
+        pred[:, :3, :, :, :] = 0.0  # pred also zero there
+
+        fn = UnifiedLoss(
+            types=["relative_l2"],
+            derivative_config={"enabled": True, "weight": 0.5, "dims": ["dx"]},
+        )
+        # No spatial_mask passed — auto-detection should handle it
+        loss = fn(pred, target, inputs, spatial_mask=None)
+        assert not torch.isnan(loss), "NaN with auto-detected inactive cells"
+        assert not torch.isinf(loss)
+
+    def test_derivative_all_active_no_mask(self):
+        """When all cells are active and no mask, derivative works normally."""
+        B, H, W, T, C = 1, 8, 16, 4, 12
+        inputs = _make_2d_inputs(B, H, W, T, C)
+        target = torch.randn(B, H, W, T) + 1.0  # no zeros
+        pred = target + 0.05 * torch.randn_like(target)
+
+        fn = UnifiedLoss(
+            types=["mse"],
+            derivative_config={"enabled": True, "weight": 0.5, "dims": ["dx", "dy"]},
+        )
+        loss = fn(pred, target, inputs, spatial_mask=None)
+        assert not torch.isnan(loss)
+        assert loss > 0
+
+    def test_derivative_mask_excludes_boundary_artifacts(self):
+        """Error at inactive cells should not affect derivative loss."""
+        B, H, W, T, C = 1, 8, 12, 2, 12
+        inputs = _make_2d_inputs(B, H, W, T, C)
+        target = torch.randn(B, H, W, T)
+        pred = target.clone()
+        # Large error only in masked-out region
+        pred[:, :3, :, :] += 100.0
+
+        mask = torch.zeros(H, W, dtype=torch.bool)
+        mask[4:, :] = True  # only bottom half active
+
+        fn = UnifiedLoss(
+            types=["mse"],
+            derivative_config={"enabled": True, "weight": 1.0, "dims": ["dx", "dy"]},
+        )
+        loss = fn(pred, target, inputs, spatial_mask=mask)
+        # Data loss should be ~0, derivative loss should be ~0
+        # because pred=target in the active region
+        assert torch.isclose(loss, torch.tensor(0.0), atol=1e-4), (
+            f"Expected ~0, got {loss.item()}"
+        )
+
+
 # ===================================================================
 # get_loss_function factory
 # ===================================================================
