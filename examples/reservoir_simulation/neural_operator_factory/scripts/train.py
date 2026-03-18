@@ -641,7 +641,8 @@ def main(cfg: DictConfig) -> None:
             if dist.rank == 0:
                 logger.info(f"Loading checkpoint from: {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path, map_location=dist.device)
-            model.load_state_dict(checkpoint["model_state_dict"])
+            model_to_load = model.module if isinstance(model, DDP) else model
+            model_to_load.load_state_dict(checkpoint["model_state_dict"])
             start_epoch = checkpoint["epoch"] + 1
             best_val_loss = checkpoint.get("val_loss", float("inf"))
             best_val_mre = checkpoint.get("val_mre", float("inf"))
