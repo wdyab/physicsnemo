@@ -152,7 +152,6 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
 
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, LaunchLogger
 
 from data.dataloader import create_dataloaders
