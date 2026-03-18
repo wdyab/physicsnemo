@@ -51,8 +51,6 @@ import argparse
 import torch
 import numpy as np
 
-from models.xdeeponet import DeepONet3DWrapper, DeepONetWrapper
-from models.xfno import UFNONet, FNO4DNet
 from data.dataloader import ReservoirDataset
 from training.metrics import (
     mean_absolute_error,
@@ -60,63 +58,27 @@ from training.metrics import (
     compute_relative_l2_error,
 )
 from training.ar_utils import ar_validate_full_rollout
+from utils.checkpoint import build_model_from_config
 
 
 def load_model(model_config, device):
     """Reconstruct model from saved config."""
-    model_type = model_config["model_type"]
-    dimensions = model_config.get("dimensions", "4d")
-
-    if model_type == "xdeeponet":
-        cls = DeepONet3DWrapper if dimensions == "4d" else DeepONetWrapper
-        model = cls(
-            padding=model_config.get("padding", 8),
-            variant=model_config.get("variant", "u_deeponet"),
-            width=model_config.get("width", 128),
-            branch1_config=model_config.get("branch1_config", {}),
-            branch2_config=model_config.get("branch2_config"),
-            trunk_config=model_config.get("trunk_config", {}),
-            decoder_type=model_config.get("decoder_type", "mlp"),
-            decoder_width=model_config.get("decoder_width", 128),
-            decoder_layers=model_config.get("decoder_layers", 2),
-            decoder_activation_fn=model_config.get("decoder_activation_fn", "relu"),
-        )
-    elif model_type == "xfno":
-        if dimensions == "4d":
-            model = FNO4DNet(
-                modes1=model_config["modes1"],
-                modes2=model_config["modes2"],
-                modes3=model_config["modes3"],
-                modes4=model_config["modes4"],
-                width=model_config["width"],
-                in_channels=model_config["in_channels"],
-                out_channels=model_config.get("out_channels", 1),
-                num_fno_layers=model_config["num_fno_layers"],
-                padding=model_config.get("padding", 8),
-            )
-        else:
-            model = UFNONet(
-                modes1=model_config["modes1"],
-                modes2=model_config["modes2"],
-                modes3=model_config["modes3"],
-                width=model_config["width"],
-                in_channels=model_config["in_channels"],
-                out_channels=model_config.get("out_channels", 1),
-                num_fno_layers=model_config["num_fno_layers"],
-                padding=model_config.get("padding", 8),
-            )
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
-
-    return model.to(device)
+    model, _ = build_model_from_config(model_config, device=device)
+    return model
 
 
-def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial_mask=None):
+def print_metrics(
+    all_predictions, all_targets, variable, num_timesteps, spatial_mask=None
+):
     """Compute and print all metrics in XMGN-compatible format."""
     if spatial_mask is not None:
         m = spatial_mask
         for _ in range(all_predictions.ndim - m.ndim):
-            m = m[np.newaxis] if m.ndim < all_predictions.ndim - 1 else m[..., np.newaxis]
+            m = (
+                m[np.newaxis]
+                if m.ndim < all_predictions.ndim - 1
+                else m[..., np.newaxis]
+            )
         m = np.broadcast_to(m, all_predictions.shape)
         pf, gf = all_predictions[m], all_targets[m]
     else:
@@ -140,7 +102,9 @@ def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial
 
     print("Per-Variable Metrics:")
     print("-" * 70)
-    print(f"  {variable:>12s}  |  MAE: {overall_mae:>12.6e}  |  RMSE: {overall_rmse:>12.6e}")
+    print(
+        f"  {variable:>12s}  |  MAE: {overall_mae:>12.6e}  |  RMSE: {overall_rmse:>12.6e}"
+    )
     print()
 
     print("Per-Timestep Metrics (averaged over all samples):")
@@ -161,7 +125,9 @@ def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial
 
     print()
     print("Per-Sample Summary (first 10 and last 5):")
-    print(f"{'sample':>6s} | {'MAE':>12s} | {'RMSE':>12s} | {'RelL2':>12s} | {'R2':>8s}")
+    print(
+        f"{'sample':>6s} | {'MAE':>12s} | {'RMSE':>12s} | {'RelL2':>12s} | {'R2':>8s}"
+    )
     print("-" * 60)
     n = all_predictions.shape[0]
     show_idx = list(range(min(10, n))) + list(range(max(10, n - 5), n))
@@ -176,7 +142,9 @@ def print_metrics(all_predictions, all_targets, variable, num_timesteps, spatial
         s_rmse = np.sqrt(np.mean((pi_f - gi_f) ** 2))
         s_rel_l2 = compute_relative_l2_error(pi_f, gi_f)
         s_r2 = compute_r2_score(pi_f, gi_f)
-        print(f"{i:6d} | {s_mae:12.6e} | {s_rmse:12.6e} | {s_rel_l2:12.6e} | {s_r2:8.4f}")
+        print(
+            f"{i:6d} | {s_mae:12.6e} | {s_rmse:12.6e} | {s_rel_l2:12.6e} | {s_r2:8.4f}"
+        )
 
     print()
     print("=" * 70)
@@ -188,31 +156,60 @@ def main():
     )
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument(
-        "--data_path", type=str,
+        "--data_path",
+        type=str,
         default="/lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne",
     )
-    parser.add_argument("--input_file", type=str, default="norne_{mode}_a.pt",
-                        help="Input file pattern ({mode} replaced with train/val/test)")
-    parser.add_argument("--output_file", type=str, default=None,
-                        help="Output file pattern. If not set, inferred from --variable: "
-                             "pressure->norne_{mode}_pressure.pt, swat->norne_{mode}_swat.pt, sgas->norne_{mode}_sgas.pt")
-    parser.add_argument("--variable", type=str, default="pressure",
-                        choices=["pressure", "swat", "sgas"],
-                        help="Variable to evaluate (default: pressure)")
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--tno", action="store_true", help="TNO mode: feed predictions back as branch2")
-    parser.add_argument("--mask", action="store_true", help="Auto-detect ACTNUM and evaluate on active cells only")
     parser.add_argument(
-        "--mode", type=str, default="full_mapping",
+        "--input_file",
+        type=str,
+        default="norne_{mode}_a.pt",
+        help="Input file pattern ({mode} replaced with train/val/test)",
+    )
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        default=None,
+        help="Output file pattern. If not set, inferred from --variable: "
+        "pressure->norne_{mode}_pressure.pt, swat->norne_{mode}_swat.pt, sgas->norne_{mode}_sgas.pt",
+    )
+    parser.add_argument(
+        "--variable",
+        type=str,
+        default="pressure",
+        choices=["pressure", "swat", "sgas"],
+        help="Variable to evaluate (default: pressure)",
+    )
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument(
+        "--tno", action="store_true", help="TNO mode: feed predictions back as branch2"
+    )
+    parser.add_argument(
+        "--mask",
+        action="store_true",
+        help="Auto-detect ACTNUM and evaluate on active cells only",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="full_mapping",
         choices=["full_mapping", "autoregressive"],
         help="full_mapping: single forward pass. autoregressive: AR rollout.",
     )
-    parser.add_argument("--L", type=int, default=1, help="AR input window (context timesteps)")
-    parser.add_argument("--K", type=int, default=3, help="AR output window (predicted timesteps per step)")
     parser.add_argument(
-        "--normalize", action="store_true",
+        "--L", type=int, default=1, help="AR input window (context timesteps)"
+    )
+    parser.add_argument(
+        "--K",
+        type=int,
+        default=3,
+        help="AR output window (predicted timesteps per step)",
+    )
+    parser.add_argument(
+        "--normalize",
+        action="store_true",
         help="Load data normalized (for models trained with normalize=true). "
-             "Metrics are reported on denormalized (physical) values.",
+        "Metrics are reported on denormalized (physical) values.",
     )
     args = parser.parse_args()
 
@@ -223,7 +220,9 @@ def main():
         "sgas": "norne_{mode}_sgas.pt",
     }
     if args.output_file is None:
-        args.output_file = VARIABLE_FILE_MAP.get(args.variable, f"norne_{{mode}}_{args.variable}.pt")
+        args.output_file = VARIABLE_FILE_MAP.get(
+            args.variable, f"norne_{{mode}}_{args.variable}.pt"
+        )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -272,7 +271,8 @@ def main():
     output_mean, output_std = 0.0, 1.0
     if args.normalize:
         train_dataset = ReservoirDataset(
-            data_path=args.data_path, mode="train",
+            data_path=args.data_path,
+            mode="train",
             input_file=input_pattern,
             output_file=output_pattern,
             normalize=True,
@@ -280,7 +280,9 @@ def main():
         norm_stats = train_dataset.get_normalization_stats()
         output_mean = norm_stats[2].item()
         output_std = norm_stats[3].item()
-        print(f"Normalization: output_mean={output_mean:.4f}, output_std={output_std:.4f}")
+        print(
+            f"Normalization: output_mean={output_mean:.4f}, output_std={output_std:.4f}"
+        )
         del train_dataset
 
     test_dataset = ReservoirDataset(
@@ -293,8 +295,10 @@ def main():
     if args.normalize:
         # Re-load train stats for the test dataset normalization
         tmp_train = ReservoirDataset(
-            data_path=args.data_path, mode="train",
-            input_file=input_pattern, output_file=output_pattern,
+            data_path=args.data_path,
+            mode="train",
+            input_file=input_pattern,
+            output_file=output_pattern,
             normalize=True,
         )
         test_dataset.set_normalization(*tmp_train.get_normalization_stats())
@@ -305,14 +309,19 @@ def main():
     spatial_mask = None
     if args.mask:
         mask_ds = ReservoirDataset(
-            data_path=args.data_path, mode="test",
-            input_file=args.input_file, output_file=args.output_file,
-            normalize=False, use_mask=True,
+            data_path=args.data_path,
+            mode="test",
+            input_file=args.input_file,
+            output_file=args.output_file,
+            normalize=False,
+            use_mask=True,
         )
         spatial_mask = mask_ds.get_static_mask()
         if spatial_mask is not None:
             sm = spatial_mask.numpy()
-            print(f"Mask:          {sm.sum()}/{sm.size} active ({100*sm.mean():.1f}%)")
+            print(
+                f"Mask:          {sm.sum()}/{sm.size} active ({100 * sm.mean():.1f}%)"
+            )
         else:
             print("Mask:          no ACTNUM detected")
         del mask_ds
@@ -323,7 +332,9 @@ def main():
     print(f"Timesteps:     {num_timesteps}")
     if args.mode == "autoregressive":
         actual_ar_steps = (num_timesteps - args.L) // args.K
-        print(f"AR steps:      {actual_ar_steps} (from {num_timesteps} timesteps, L={args.L}, K={args.K})")
+        print(
+            f"AR steps:      {actual_ar_steps} (from {num_timesteps} timesteps, L={args.L}, K={args.K})"
+        )
     print()
 
     # -- Model --
@@ -350,8 +361,11 @@ def main():
                 y_batch_dev = y_batch.to(device)
 
                 pred_batch = ar_validate_full_rollout(
-                    model, x_batch, y_batch_dev,
-                    L=args.L, K=args.K,
+                    model,
+                    x_batch,
+                    y_batch_dev,
+                    L=args.L,
+                    K=args.K,
                     is_tno=is_tno,
                     feedback_channel=feedback_channel,
                 )
@@ -360,7 +374,9 @@ def main():
                 all_targets.append(y_batch.numpy())
 
                 if (batch_idx + 1) % 10 == 0:
-                    print(f"  {(batch_idx + 1) * args.batch_size}/{len(test_dataset)} samples")
+                    print(
+                        f"  {(batch_idx + 1) * args.batch_size}/{len(test_dataset)} samples"
+                    )
     else:
         print("Running FULL-MAPPING inference...")
         with torch.no_grad():
@@ -372,7 +388,9 @@ def main():
                 all_targets.append(y_batch.numpy())
 
                 if (batch_idx + 1) % 10 == 0:
-                    print(f"  {(batch_idx + 1) * args.batch_size}/{len(test_dataset)} samples")
+                    print(
+                        f"  {(batch_idx + 1) * args.batch_size}/{len(test_dataset)} samples"
+                    )
 
     all_predictions = np.concatenate(all_predictions, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
@@ -382,8 +400,12 @@ def main():
     if args.normalize:
         all_predictions = all_predictions * output_std + output_mean
         all_targets = all_targets * output_std + output_mean
-        print(f"Denormalized to physical units (mean={output_mean:.4f}, std={output_std:.4f})")
-        print(f"  Pred range: [{all_predictions.min():.4f}, {all_predictions.max():.4f}]")
+        print(
+            f"Denormalized to physical units (mean={output_mean:.4f}, std={output_std:.4f})"
+        )
+        print(
+            f"  Pred range: [{all_predictions.min():.4f}, {all_predictions.max():.4f}]"
+        )
         print(f"  GT range:   [{all_targets.min():.4f}, {all_targets.max():.4f}]")
         print()
 

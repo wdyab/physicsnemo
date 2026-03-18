@@ -38,6 +38,7 @@ import mlflow.pytorch
 from models.xfno import UFNONet, FNO4DNet
 from models.physicsnemo_unet import StandaloneUNet
 from models.xdeeponet import DeepONetWrapper, DeepONet3DWrapper
+from utils.checkpoint import build_model_from_config, save_checkpoint, load_checkpoint
 
 
 def print_model_architecture(model, model_type: str, dimensions: str, cfg, logger):
@@ -631,6 +632,7 @@ def main(cfg: DictConfig) -> None:
     start_epoch = 1
     best_val_loss = float("inf")
     best_val_mre = float("inf")
+    _resume_ckpt = None
 
     if (
         hasattr(cfg.training, "resume_from_checkpoint")
@@ -640,18 +642,28 @@ def main(cfg: DictConfig) -> None:
         if checkpoint_path.exists():
             if dist.rank == 0:
                 logger.info(f"Loading checkpoint from: {checkpoint_path}")
-            checkpoint = torch.load(checkpoint_path, map_location=dist.device)
+            _resume_ckpt = load_checkpoint(checkpoint_path, device=dist.device)
+
+            # Validate that the checkpoint architecture matches the current model
+            ckpt_cfg = _resume_ckpt.get("model_config", {})
+            ckpt_params = sum(
+                p.numel()
+                for p in (
+                    model.module if isinstance(model, DDP) else model
+                ).parameters()
+            )
+
             model_to_load = model.module if isinstance(model, DDP) else model
-            model_to_load.load_state_dict(checkpoint["model_state_dict"])
-            start_epoch = checkpoint["epoch"] + 1
-            best_val_loss = checkpoint.get("val_loss", float("inf"))
-            best_val_mre = checkpoint.get("val_mre", float("inf"))
+            model_to_load.load_state_dict(_resume_ckpt["model_state_dict"])
+
+            start_epoch = _resume_ckpt["epoch"] + 1
+            best_val_loss = _resume_ckpt.get("val_loss", float("inf"))
+            best_val_mre = _resume_ckpt.get("val_mre", float("inf"))
+
             if dist.rank == 0:
                 logger.success(
-                    f"Resumed from epoch {checkpoint['epoch']}, best val loss: {best_val_loss:.6f}, best val MRE: {best_val_mre:.6f}"
-                )
-                logger.info(
-                    f"Continuing training from epoch {start_epoch} to {cfg.training.epochs}"
+                    f"Resumed from epoch {_resume_ckpt['epoch']}, "
+                    f"best val loss: {best_val_loss:.6f}"
                 )
         else:
             if dist.rank == 0:
@@ -661,6 +673,20 @@ def main(cfg: DictConfig) -> None:
     else:
         if dist.rank == 0:
             logger.success("Starting training from scratch...")
+
+    # Restore optimizer and scheduler state if resuming
+    if _resume_ckpt is not None:
+        if "optimizer_state_dict" in _resume_ckpt:
+            optimizer.load_state_dict(_resume_ckpt["optimizer_state_dict"])
+            if dist.rank == 0:
+                logger.info(
+                    f"Restored optimizer state (LR={optimizer.param_groups[0]['lr']:.2e})"
+                )
+        if "scheduler_state_dict" in _resume_ckpt:
+            scheduler.load_state_dict(_resume_ckpt["scheduler_state_dict"])
+            if dist.rank == 0:
+                logger.info("Restored scheduler state")
+        del _resume_ckpt  # free memory
 
     # ---------------------------------------------------------------------------
     # Determine training regime
@@ -1075,15 +1101,16 @@ def main(cfg: DictConfig) -> None:
                                     xdeeponet_cfg.branch2
                                 )
 
-                        torch.save(
-                            {
-                                "epoch": epoch,
-                                "model_state_dict": model_to_save.state_dict(),
-                                "val_loss": best_val_loss,
-                                metric_key: best_val_mre,
-                                "model_config": model_config,
-                            },
-                            best_model_path,
+                        save_checkpoint(
+                            path=best_model_path,
+                            model=model,
+                            epoch=epoch,
+                            val_loss=best_val_loss,
+                            metric_key=metric_key,
+                            metric_value=best_val_mre,
+                            model_config=model_config,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
                         )
 
                         # Log model to MLFlow
