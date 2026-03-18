@@ -1,3 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Neural Operator Factory — Training Configuration
 
 defaults:
@@ -22,7 +38,7 @@ data:
   
   # Variable name — used for checkpoint naming and metric selection, not file resolution.
   # Choices: 'pressure', 'saturation'
-  variable: saturation
+  variable: pressure
 
   # Input/output file patterns ({mode} is replaced with train/val/test).
   # Available Norne dataset files:
@@ -34,11 +50,11 @@ data:
   # For CO2 dataset: set input_file/output_file to null and use variable instead
   #   (resolves to dP_{mode}_a.pt / dP_{mode}_u.pt or sg_* automatically)
   input_file: norne_{mode}_a.pt
-  output_file: norne_{mode}_swat.pt
+  output_file: norne_{mode}_pressure.pt
 
   # z-score normalize inputs and outputs.
   # Recommended: true for pressure (large dynamic range), false for saturation (bounded [0,1]).
-  normalize: false
+  normalize: true
   num_workers: 2
 
   # ---------------------------------------------------------------------------
@@ -72,6 +88,7 @@ training:
   patience: 20
   use_amp: false
   use_graphs: true
+  resume_from_checkpoint: ./checkpoints/best_model_pressure_deeponet3d_tno_spatial.pth
 
   # ---------------------------------------------------------------------------
   # Training Regime
@@ -89,34 +106,36 @@ training:
     # K: number of timesteps the model predicts per forward pass.
     # DeepONet/TNO: any K value works (temporal bundling via trunk queries).
     # xFNO: requires L + K >= 2 * time_modes for proper spectral resolution.
-    output_window: 5
+    output_window: 3
 
     # Stage 1 -- Teacher Forcing: model always sees ground-truth input.
     # Teaches the underlying physics from clean signals.
-    teacher_forcing_epochs: 20
+    teacher_forcing_epochs: 5
 
     # Stage 2 -- Pushforward: short unrolled chains with live gradients.
     # Gradually increases unroll length (curriculum) to bridge the gap
     # between teacher forcing and free-running rollout.
     # Set to 0 to skip this stage and go directly to rollout.
-    pushforward_epochs: 50
+    pushforward_epochs: 0
 
     # Stage 3 -- Rollout: free-running autoregressive sweep (detached feedback).
     # Each window sees the model's own (detached) predictions,
     # training the model to self-correct approximation errors.
-    rollout_epochs: 200
+    rollout_epochs: 175
 
     # Maximum number of pushforward unroll steps.
     # Curriculum linearly ramps from 1 to this value over pushforward_epochs.
     max_unroll: 5
 
-    # Noise standard deviation injected into branch2 / feedback during training.
-    # Positive values add Gaussian noise for robustness; 0 disables.
+    # Noise standard deviation injected into autoregressive feedback during
+    # training (both TNO branch2 and feedback channel). Makes the model
+    # robust to its own prediction errors during rollout. 0 disables.
     noise_std: 0.0
 
     # Feedback channel: append previous prediction as an extra input channel.
-    # When true, the model receives (C + 1) input channels instead of C.
-    # Set to false to disable.
+    # Required for non-TNO models (U-DeepONet, FNO, etc.) to enable real
+    # autoregressive feedback. TNO models already receive feedback via
+    # branch2, so this is redundant for TNO.
     use_feedback_channel: false
 
     # Gradient checkpointing: trade compute for memory during rollout / pushforward.

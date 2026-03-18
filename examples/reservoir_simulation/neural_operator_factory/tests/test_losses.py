@@ -548,3 +548,161 @@ class TestARCompatibility:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ===================================================================
+# Derivative loss with all metric types
+# ===================================================================
+
+
+class TestDerivativeAllMetrics:
+    """Verify derivative loss works with every loss metric + masking."""
+
+    @pytest.mark.parametrize("metric", ["mse", "l1", "relative_l2", "huber"])
+    def test_derivative_metric_2d(self, metric):
+        """All metrics produce finite loss for 2D derivative."""
+        B, H, W, T, C = 1, 8, 16, 4, 12
+        inputs = _make_2d_inputs(B, H, W, T, C)
+        target = torch.randn(B, H, W, T) + 1.0
+        pred = target + 0.05 * torch.randn_like(target)
+
+        fn = UnifiedLoss(
+            types=["mse"],
+            derivative_config={
+                "enabled": True,
+                "weight": 0.5,
+                "dims": ["dx"],
+                "metric": metric,
+            },
+        )
+        loss = fn(pred, target, inputs)
+        assert not torch.isnan(loss), f"NaN with metric={metric}"
+        assert loss > 0
+
+    @pytest.mark.parametrize("metric", ["mse", "l1", "relative_l2", "huber"])
+    def test_derivative_metric_with_mask(self, metric):
+        """All metrics work with derivative + sparse mask."""
+        B, X, Y, Z, T, C = 1, 8, 10, 4, 3, 11
+        inputs = _make_3d_inputs(B, X, Y, Z, T, C)
+        target = torch.randn(B, X, Y, Z, T) + 1.0
+        pred = target + 0.05 * torch.randn_like(target)
+
+        mask = torch.zeros(X, Y, Z, dtype=torch.bool)
+        mask[2:6, 2:8, 1:3] = True
+
+        fn = UnifiedLoss(
+            types=["mse"],
+            derivative_config={
+                "enabled": True,
+                "weight": 0.5,
+                "dims": ["dx"],
+                "metric": metric,
+            },
+        )
+        loss = fn(pred, target, inputs, spatial_mask=mask)
+        assert not torch.isnan(loss), f"NaN with metric={metric} + mask"
+
+
+# ===================================================================
+# Edge cases
+# ===================================================================
+
+
+class TestLossEdgeCases:
+    """Edge cases: minimum grids, single batch, small AR windows."""
+
+    def test_minimum_grid_for_derivative_2d(self):
+        """3 cells along derivative axis = minimum for central difference."""
+        B, H, W, T, C = 1, 3, 3, 2, 12
+        inputs = _make_2d_inputs(B, H, W, T, C)
+        target = torch.randn(B, H, W, T) + 1.0
+        pred = target + 0.1
+
+        fn = UnifiedLoss(
+            types=["mse"],
+            derivative_config={"enabled": True, "weight": 0.5, "dims": ["dx", "dy"]},
+        )
+        loss = fn(pred, target, inputs)
+        assert not torch.isnan(loss)
+        assert loss > 0
+
+    def test_minimum_grid_for_derivative_3d(self):
+        """3x3x3 grid with all 3 derivative dims."""
+        B, X, Y, Z, T, C = 1, 3, 3, 3, 2, 11
+        inputs = _make_3d_inputs(B, X, Y, Z, T, C)
+        target = torch.randn(B, X, Y, Z, T) + 1.0
+        pred = target + 0.1
+
+        fn = UnifiedLoss(
+            types=["mse"],
+            derivative_config={
+                "enabled": True,
+                "weight": 0.5,
+                "dims": ["dx", "dy", "dz"],
+            },
+        )
+        loss = fn(pred, target, inputs)
+        assert not torch.isnan(loss)
+
+    def test_single_batch(self):
+        """B=1 with all loss components."""
+        B, H, W, T, C = 1, 8, 8, 4, 12
+        inputs = _make_2d_inputs(B, H, W, T, C)
+        target = torch.randn(B, H, W, T) + 1.0
+        pred = target + 0.05 * torch.randn_like(target)
+
+        from training.physics_losses import MassConservationLoss
+
+        fn = UnifiedLoss(
+            types=["relative_l2"],
+            derivative_config={"enabled": True, "weight": 0.3, "dims": ["dx"]},
+            physics_losses={"mc": (MassConservationLoss(), 0.5)},
+        )
+        loss = fn(pred, target, inputs)
+        assert not torch.isnan(loss)
+
+    def test_k_equals_1_ar_window(self):
+        """K=1 (single output timestep) with derivative and physics."""
+        B, X, Y, Z, C = 1, 6, 8, 4, 11
+        inputs = _make_3d_inputs(B, X, Y, Z, 1, C)
+        target = torch.randn(B, X, Y, Z, 1) + 1.0
+        pred = target + 0.1
+
+        from training.physics_losses import MassConservationLoss
+
+        fn = UnifiedLoss(
+            types=["mse"],
+            derivative_config={"enabled": True, "weight": 0.5, "dims": ["dx"]},
+            physics_losses={"mc": (MassConservationLoss(), 1.0)},
+        )
+        loss = fn(pred, target, inputs)
+        assert not torch.isnan(loss)
+
+    def test_norne_regression(self):
+        """Regression test: Norne-like grid (39% active, normalized widths)
+        with relative_l2 derivative should NOT produce NaN."""
+        B, X, Y, Z, K, C = 2, 46, 112, 22, 3, 11
+        pred = torch.randn(B, X, Y, Z, K)
+        target = torch.randn(B, X, Y, Z, K)
+        inputs = torch.zeros(B, X, Y, Z, 1, C)
+
+        mask = torch.zeros(X, Y, Z, dtype=torch.bool)
+        mask[5:35, 10:100, 2:18] = True
+
+        gx = torch.linspace(0, 1, X).view(X, 1, 1).expand(X, Y, Z) * mask.float()
+        gy = torch.linspace(0, 1, Y).view(1, Y, 1).expand(X, Y, Z) * mask.float()
+        gz = torch.linspace(0, 1, Z).view(1, 1, Z).expand(X, Y, Z) * mask.float()
+        inputs[..., 0, -4] = gx.unsqueeze(0).expand(B, -1, -1, -1)
+        inputs[..., 0, -3] = gy.unsqueeze(0).expand(B, -1, -1, -1)
+        inputs[..., 0, -2] = gz.unsqueeze(0).expand(B, -1, -1, -1)
+
+        pred[:, ~mask, :] = 0.0
+        target[:, ~mask, :] = 0.0
+
+        fn = UnifiedLoss(
+            types=["relative_l2"],
+            derivative_config={"enabled": True, "weight": 0.5, "dims": ["dx"]},
+        )
+        loss = fn(pred, target, inputs, spatial_mask=mask)
+        assert not torch.isnan(loss), "Norne regression: NaN detected"
+        assert not torch.isinf(loss), "Norne regression: Inf detected"

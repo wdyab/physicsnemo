@@ -1,0 +1,332 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for xDeepONet model variants (2D and 3D)."""
+
+import sys
+from pathlib import Path
+
+import pytest
+import torch
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from models.xdeeponet import (
+    TrunkNet,
+    MLPBranch,
+    SpatialBranch,
+    SpatialBranch3D,
+    DeepONet,
+    DeepONetWrapper,
+    DeepONet3D,
+    DeepONet3DWrapper,
+)
+
+BRANCH1_SPATIAL = {
+    "encoder": "spatial",
+    "num_fourier_layers": 0,
+    "num_unet_layers": 1,
+    "num_conv_layers": 0,
+    "modes1": 4,
+    "modes2": 4,
+    "kernel_size": 3,
+    "dropout": 0.0,
+    "unet_impl": "custom",
+    "activation_fn": "relu",
+}
+BRANCH1_MLP = {
+    "encoder": "mlp",
+    "hidden_width": 32,
+    "num_layers": 2,
+    "activation_fn": "relu",
+}
+BRANCH2_SPATIAL = {
+    "encoder": "spatial",
+    "num_fourier_layers": 0,
+    "num_unet_layers": 1,
+    "num_conv_layers": 0,
+    "modes1": 4,
+    "modes2": 4,
+    "kernel_size": 3,
+    "dropout": 0.0,
+    "unet_impl": "custom",
+    "activation_fn": "relu",
+}
+BRANCH2_MLP = {
+    "encoder": "mlp",
+    "hidden_width": 32,
+    "num_layers": 2,
+    "activation_fn": "relu",
+}
+TRUNK = {
+    "input_type": "time",
+    "hidden_width": 32,
+    "num_layers": 2,
+    "activation_fn": "tanh",
+}
+
+
+def _init_lazy(model, x, **kwargs):
+    """Run one forward pass to initialise LazyLinear modules."""
+    with torch.no_grad():
+        model(x, **kwargs)
+
+
+class TestTrunkNet:
+    """Tests for TrunkNet."""
+
+    def test_output_shape(self):
+        trunk = TrunkNet(in_features=1, out_features=32, hidden_width=16, num_layers=3)
+        x = torch.randn(10, 1)
+        assert trunk(x).shape == (10, 32)
+
+    def test_grid_input(self):
+        trunk = TrunkNet(in_features=4, out_features=64, hidden_width=32, num_layers=2)
+        x = torch.randn(5, 4)
+        assert trunk(x).shape == (5, 64)
+
+
+class TestMLPBranch:
+    """Tests for MLPBranch."""
+
+    def test_output_shape(self):
+        branch = MLPBranch(out_features=32, hidden_width=16, num_layers=3)
+        x = torch.randn(2, 50)
+        out = branch(x)
+        assert out.shape == (2, 32)
+
+
+class TestSpatialBranch2D:
+    """Tests for 2D SpatialBranch."""
+
+    def test_output_shape(self):
+        branch = SpatialBranch(
+            in_channels=5,
+            width=16,
+            num_unet_layers=1,
+            kernel_size=3,
+            unet_impl="custom",
+            activation_fn="relu",
+        )
+        x = torch.randn(2, 16, 24, 5)
+        _init_lazy(branch, x)
+        out = branch(x)
+        assert out.shape == (2, 16, 24, 16)
+
+
+class TestSpatialBranch3D:
+    """Tests for 3D SpatialBranch."""
+
+    def test_output_shape(self):
+        branch = SpatialBranch3D(
+            in_channels=5,
+            width=16,
+            num_unet_layers=1,
+            kernel_size=3,
+            unet_impl="custom",
+            activation_fn="relu",
+        )
+        x = torch.randn(2, 8, 16, 8, 5)
+        _init_lazy(branch, x)
+        out = branch(x)
+        assert out.shape == (2, 8, 16, 8, 16)
+
+
+SINGLE_BRANCH_VARIANTS = ["deeponet", "u_deeponet", "conv_deeponet"]
+DUAL_BRANCH_VARIANTS = ["mionet", "tno"]
+
+
+class TestDeepONetWrapper2D:
+    """Tests for 2D DeepONet wrapper."""
+
+    @pytest.mark.parametrize("variant", SINGLE_BRANCH_VARIANTS)
+    def test_forward_shape_single_branch(self, variant):
+        B, H, W, T, C = 2, 16, 24, 4, 5
+        model = DeepONetWrapper(
+            padding=8,
+            variant=variant,
+            width=32,
+            branch1_config=BRANCH1_SPATIAL,
+            trunk_config=TRUNK,
+        )
+        x = torch.randn(B, H, W, T, C)
+        _init_lazy(model, x)
+        out = model(x)
+        assert out.shape == (B, H, W, T)
+
+    @pytest.mark.parametrize("variant", DUAL_BRANCH_VARIANTS)
+    def test_forward_shape_dual_branch(self, variant):
+        B, H, W, T, C = 2, 16, 24, 4, 5
+        model = DeepONetWrapper(
+            padding=8,
+            variant=variant,
+            width=32,
+            branch1_config=BRANCH1_SPATIAL,
+            branch2_config=BRANCH2_SPATIAL,
+            trunk_config=TRUNK,
+        )
+        x = torch.randn(B, H, W, T, C)
+        b2 = torch.randn(B, H, W, T)
+        _init_lazy(model, x, x_branch2=b2)
+        out = model(x, x_branch2=b2)
+        assert out.shape == (B, H, W, T)
+
+    def test_target_times_changes_output_T(self):
+        B, H, W, T_in, C = 2, 16, 24, 2, 5
+        K = 5
+        model = DeepONetWrapper(
+            padding=8,
+            variant="u_deeponet",
+            width=32,
+            branch1_config=BRANCH1_SPATIAL,
+            trunk_config=TRUNK,
+        )
+        x = torch.randn(B, H, W, T_in, C)
+        tt = torch.linspace(0, 1, K)
+        _init_lazy(model, x)
+        out = model(x, target_times=tt)
+        assert out.shape == (B, H, W, K)
+
+    def test_invalid_variant_raises(self):
+        with pytest.raises(ValueError, match="Unknown variant"):
+            DeepONetWrapper(
+                variant="invalid",
+                width=32,
+                branch1_config=BRANCH1_SPATIAL,
+                trunk_config=TRUNK,
+            )
+
+    def test_count_params(self):
+        model = DeepONetWrapper(
+            padding=8,
+            variant="deeponet",
+            width=32,
+            branch1_config=BRANCH1_SPATIAL,
+            trunk_config=TRUNK,
+        )
+        x = torch.randn(1, 16, 24, 2, 5)
+        _init_lazy(model, x)
+        assert model.count_params() > 0
+
+    def test_gradient_flow(self):
+        model = DeepONetWrapper(
+            padding=8,
+            variant="u_deeponet",
+            width=32,
+            branch1_config=BRANCH1_SPATIAL,
+            trunk_config=TRUNK,
+        )
+        x = torch.randn(1, 16, 24, 2, 5)
+        _init_lazy(model, x)
+        x = torch.randn(1, 16, 24, 2, 5, requires_grad=True)
+        out = model(x)
+        out.sum().backward()
+        assert x.grad is not None
+
+
+BRANCH1_3D = {
+    "encoder": "spatial",
+    "num_fourier_layers": 0,
+    "num_unet_layers": 1,
+    "num_conv_layers": 0,
+    "modes1": 4,
+    "modes2": 4,
+    "modes3": 4,
+    "kernel_size": 3,
+    "dropout": 0.0,
+    "unet_impl": "custom",
+    "activation_fn": "relu",
+}
+BRANCH2_3D = {
+    "encoder": "spatial",
+    "num_fourier_layers": 0,
+    "num_unet_layers": 1,
+    "num_conv_layers": 0,
+    "modes1": 4,
+    "modes2": 4,
+    "modes3": 4,
+    "kernel_size": 3,
+    "dropout": 0.0,
+    "unet_impl": "custom",
+    "activation_fn": "relu",
+}
+
+
+class TestDeepONet3DWrapper:
+    """Tests for 3D DeepONet wrapper."""
+
+    @pytest.mark.parametrize("variant", SINGLE_BRANCH_VARIANTS)
+    def test_forward_shape_single_branch(self, variant):
+        B, X, Y, Z, T, C = 1, 8, 16, 8, 3, 5
+        model = DeepONet3DWrapper(
+            padding=8,
+            variant=variant,
+            width=32,
+            branch1_config=BRANCH1_3D,
+            trunk_config=TRUNK,
+        )
+        x = torch.randn(B, X, Y, Z, T, C)
+        _init_lazy(model, x)
+        out = model(x)
+        assert out.shape == (B, X, Y, Z, T)
+
+    def test_tno_requires_branch2(self):
+        B, X, Y, Z, T, C = 1, 8, 16, 8, 3, 5
+        model = DeepONet3DWrapper(
+            padding=8,
+            variant="tno",
+            width=32,
+            branch1_config=BRANCH1_3D,
+            branch2_config=BRANCH2_3D,
+            trunk_config=TRUNK,
+        )
+        x = torch.randn(B, X, Y, Z, T, C)
+        b2 = torch.randn(B, X, Y, Z, 1)
+        _init_lazy(model, x, x_branch2=b2)
+        out = model(x, x_branch2=b2)
+        assert out.shape == (B, X, Y, Z, T)
+
+    def test_target_times_3d(self):
+        B, X, Y, Z, T_in, C = 1, 8, 16, 8, 1, 5
+        K = 4
+        model = DeepONet3DWrapper(
+            padding=8,
+            variant="u_deeponet",
+            width=32,
+            branch1_config=BRANCH1_3D,
+            trunk_config=TRUNK,
+        )
+        x = torch.randn(B, X, Y, Z, T_in, C)
+        tt = torch.linspace(0, 1, K)
+        _init_lazy(model, x)
+        out = model(x, target_times=tt)
+        assert out.shape == (B, X, Y, Z, K)
+
+    def test_count_params_3d(self):
+        model = DeepONet3DWrapper(
+            padding=8,
+            variant="deeponet",
+            width=32,
+            branch1_config=BRANCH1_3D,
+            trunk_config=TRUNK,
+        )
+        x = torch.randn(1, 8, 16, 8, 2, 5)
+        _init_lazy(model, x)
+        assert model.count_params() > 0
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

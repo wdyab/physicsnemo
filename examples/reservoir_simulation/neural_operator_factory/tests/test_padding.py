@@ -1,6 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Unit tests for padding utilities (dimension-agnostic)."""
 
@@ -8,6 +20,7 @@ import sys
 from pathlib import Path
 
 import torch
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -20,19 +33,38 @@ from utils.padding import (
 
 
 class TestComputePads:
+    """Tests for ComputePads."""
+
     def test_compute_right_pad_to_multiple(self):
-        assert compute_right_pad_to_multiple((16, 24), multiple=8, min_right_pad=0) == (0, 0)
-        assert compute_right_pad_to_multiple((17, 24), multiple=8, min_right_pad=0) == (7, 0)
-        assert compute_right_pad_to_multiple((16, 24), multiple=8, min_right_pad=8) == (8, 8)
+        assert compute_right_pad_to_multiple((16, 24), multiple=8, min_right_pad=0) == (
+            0,
+            0,
+        )
+        assert compute_right_pad_to_multiple((17, 24), multiple=8, min_right_pad=0) == (
+            7,
+            0,
+        )
+        assert compute_right_pad_to_multiple((16, 24), multiple=8, min_right_pad=8) == (
+            8,
+            8,
+        )
         # Ensure min_right_pad does not break alignment (d + pad must stay multiple-of-8)
-        assert compute_right_pad_to_multiple((46,), multiple=8, min_right_pad=8) == (10,)
+        assert compute_right_pad_to_multiple((46,), multiple=8, min_right_pad=8) == (
+            10,
+        )
 
     def test_compute_right_pad_to_multiple_per_dim(self):
-        assert compute_right_pad_to_multiple_per_dim((16, 17), multiple=8, min_right_pad=(0, 0)) == (0, 7)
-        assert compute_right_pad_to_multiple_per_dim((16, 17), multiple=8, min_right_pad=(8, 0)) == (8, 7)
+        assert compute_right_pad_to_multiple_per_dim(
+            (16, 17), multiple=8, min_right_pad=(0, 0)
+        ) == (0, 7)
+        assert compute_right_pad_to_multiple_per_dim(
+            (16, 17), multiple=8, min_right_pad=(8, 0)
+        ) == (8, 7)
 
 
 class TestPadRightNd:
+    """Tests for PadRightNd."""
+
     def test_replicate_right_pad_6d(self):
         # Shape: (B, X, Y, Z, T, C)
         x = torch.zeros(1, 1, 1, 1, 2, 1)
@@ -46,6 +78,8 @@ class TestPadRightNd:
 
 
 class TestPadSpatialRight:
+    """Tests for PadSpatialRight."""
+
     def test_2d_spatial_keeps_rest(self):
         x = torch.randn(2, 5, 7, 3, 4)  # (B,H,W,T,C)
         y = pad_spatial_right(x, spatial_ndim=2, right_pad=(1, 2), mode="replicate")
@@ -59,7 +93,83 @@ class TestPadSpatialRight:
     def test_4d_spatial_works_for_6d_inputs(self):
         # (B,X,Y,Z,T,C)
         x = torch.tensor([[[[[[10.0], [20.0]]]]]])  # (1,1,1,1,2,1)
-        y = pad_spatial_right(x, spatial_ndim=4, right_pad=(1, 1, 1, 2), mode="replicate")
+        y = pad_spatial_right(
+            x, spatial_ndim=4, right_pad=(1, 1, 1, 2), mode="replicate"
+        )
         assert y.shape == (1, 2, 2, 2, 4, 1)
         assert y[0, -1, -1, -1, -1, 0].item() == 20.0
 
+
+class TestPaddingAdditional:
+    """Additional padding tests for edge cases."""
+
+    def test_zero_padding_returns_unchanged(self):
+        from utils.padding import pad_spatial_right
+
+        x = torch.randn(2, 8, 16, 4, 3)
+        out = pad_spatial_right(x, spatial_ndim=2, right_pad=(0, 0))
+        assert torch.equal(x, out)
+
+    def test_non_uniform_per_dim_padding(self):
+        from utils.padding import compute_right_pad_to_multiple_per_dim
+
+        pads = compute_right_pad_to_multiple_per_dim(
+            (10, 13, 7), multiple=8, min_right_pad=[2, 4, 1]
+        )
+        for i, (orig, pad) in enumerate(zip([10, 13, 7], pads)):
+            assert (orig + pad) % 8 == 0, f"Dim {i}: {orig}+{pad} not multiple of 8"
+            assert pad >= [2, 4, 1][i], f"Dim {i}: pad {pad} < min {[2, 4, 1][i]}"
+
+    def test_constant_mode(self):
+        from utils.padding import pad_right_nd
+
+        x = torch.zeros(2, 4, 6)
+        out = pad_right_nd(
+            x, dims=[1, 2], right_pad=[2, 3], mode="constant", constant_value=99.0
+        )
+        assert out.shape == (2, 6, 9)
+        assert out[0, 5, 0].item() == 99.0
+        assert out[0, 0, 7].item() == 99.0
+
+    def test_replicate_mode(self):
+        from utils.padding import pad_right_nd
+
+        x = torch.arange(4).float().unsqueeze(0).unsqueeze(0)  # (1, 1, 4)
+        out = pad_right_nd(x, dims=[2], right_pad=[2], mode="replicate")
+        assert out.shape == (1, 1, 6)
+        assert out[0, 0, 4] == out[0, 0, 3]
+        assert out[0, 0, 5] == out[0, 0, 3]
+
+    def test_invalid_spatial_ndim_raises(self):
+        from utils.padding import pad_spatial_right
+
+        with pytest.raises(ValueError, match="spatial_ndim must be"):
+            pad_spatial_right(torch.randn(2, 4, 4), spatial_ndim=1, right_pad=(2,))
+
+    def test_wrong_right_pad_length_raises(self):
+        from utils.padding import pad_spatial_right
+
+        with pytest.raises(ValueError, match="right_pad must have length"):
+            pad_spatial_right(
+                torch.randn(2, 4, 4, 3), spatial_ndim=2, right_pad=(2, 3, 4)
+            )
+
+    def test_4d_spatial_padding(self):
+        from utils.padding import pad_spatial_right
+
+        x = torch.randn(2, 4, 6, 3, 5, 8)  # (B, X, Y, Z, T, C)
+        out = pad_spatial_right(x, spatial_ndim=4, right_pad=(1, 2, 1, 3))
+        assert out.shape == (2, 5, 8, 4, 8, 8)
+
+    def test_multiple_of_8_already_aligned(self):
+        from utils.padding import compute_right_pad_to_multiple
+
+        pads = compute_right_pad_to_multiple((16, 24), multiple=8, min_right_pad=0)
+        assert pads == (0, 0)
+
+    def test_multiple_with_min_pad(self):
+        from utils.padding import compute_right_pad_to_multiple
+
+        pads = compute_right_pad_to_multiple((16,), multiple=8, min_right_pad=4)
+        assert pads[0] >= 4
+        assert (16 + pads[0]) % 8 == 0

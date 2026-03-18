@@ -65,6 +65,7 @@ from torch.utils.checkpoint import checkpoint as grad_checkpoint
 # Time-axis helpers
 # ---------------------------------------------------------------------------
 
+
 def _time_axis_input(x: Tensor) -> int:
     """Time axis index for input ``(..., T, C)``."""
     return x.dim() - 2
@@ -79,6 +80,7 @@ def _time_axis_target(y: Tensor) -> int:
 # Time-window slicing
 # ---------------------------------------------------------------------------
 
+
 def slice_input_window(inputs: Tensor, t0: int, width: int) -> Tensor:
     """Extract ``(B, *spatial, width, C)`` from full-trajectory input."""
     return inputs.narrow(_time_axis_input(inputs), t0, width)
@@ -92,6 +94,7 @@ def slice_target_window(targets: Tensor, t0: int, width: int) -> Tensor:
 # ---------------------------------------------------------------------------
 # Feedback channel injection & noise
 # ---------------------------------------------------------------------------
+
 
 def inject_feedback_channel(
     x_window: Tensor,
@@ -126,6 +129,7 @@ def add_noise(tensor: Tensor, noise_std: float) -> Tensor:
 # Target-time coordinate extraction
 # ---------------------------------------------------------------------------
 
+
 def extract_target_times(inputs: Tensor, t_start: int, K: int) -> Tensor:
     """Extract K target time coordinates from the full input tensor.
 
@@ -156,6 +160,7 @@ def extract_target_times(inputs: Tensor, t_start: int, K: int) -> Tensor:
 # Model call helpers
 # ---------------------------------------------------------------------------
 
+
 def _call_model(
     model,
     x_window: Tensor,
@@ -172,7 +177,10 @@ def _call_model(
 
     if use_checkpointing and model.training:
         return grad_checkpoint(
-            _forward_with_kwargs, model, x_window, kwargs,
+            _forward_with_kwargs,
+            model,
+            x_window,
+            kwargs,
             use_reentrant=False,
         )
     return model(x_window, **kwargs)
@@ -186,6 +194,7 @@ def _forward_with_kwargs(model, x_window, kwargs):
 def _model_accepts_target_times(model) -> bool:
     """Check if the model's forward() accepts a ``target_times`` kwarg."""
     import inspect
+
     m = model.module if hasattr(model, "module") else model
     sig = inspect.signature(m.forward)
     return "target_times" in sig.parameters
@@ -194,6 +203,7 @@ def _model_accepts_target_times(model) -> bool:
 def _model_accepts_x_branch2(model) -> bool:
     """Check if the model's forward() accepts an ``x_branch2`` kwarg."""
     import inspect
+
     m = model.module if hasattr(model, "module") else model
     sig = inspect.signature(m.forward)
     return "x_branch2" in sig.parameters
@@ -202,6 +212,7 @@ def _model_accepts_x_branch2(model) -> bool:
 # ---------------------------------------------------------------------------
 # Window iteration
 # ---------------------------------------------------------------------------
+
 
 def _iter_windows(total_T: int, L: int, K: int, stride: Optional[int] = None):
     """Yield ``(t0, target_start, actual_K)`` for each window.
@@ -236,6 +247,7 @@ def _iter_windows(total_T: int, L: int, K: int, stride: Optional[int] = None):
 # Branch-2 builder (TNO previous-solution input)
 # ---------------------------------------------------------------------------
 
+
 def _build_branch2(
     targets: Tensor,
     prev_pred: Optional[Tensor],
@@ -269,6 +281,7 @@ def _build_branch2(
 # ---------------------------------------------------------------------------
 # Curriculum scheduling
 # ---------------------------------------------------------------------------
+
 
 def compute_unroll_steps(
     epoch: int,
@@ -315,6 +328,7 @@ def get_training_stage(
 # Feedback helper (shared by training steps)
 # ---------------------------------------------------------------------------
 
+
 def _get_feedback(
     targets: Tensor,
     prev_pred: Optional[Tensor],
@@ -335,6 +349,7 @@ def _get_feedback(
 # ---------------------------------------------------------------------------
 # Teacher-forcing training step (one batch) -- sequential sweep
 # ---------------------------------------------------------------------------
+
 
 def teacher_forcing_step(
     model,
@@ -384,11 +399,18 @@ def teacher_forcing_step(
         target_times = extract_target_times(inputs, target_start, actual_K)
 
         y_branch2 = _build_branch2(
-            targets, None, current_t, L, t_ax, is_tno, noise_std,
+            targets,
+            None,
+            current_t,
+            L,
+            t_ax,
+            is_tno,
+            noise_std,
         )
 
         if feedback_channel is not None:
             fb = slice_target_window(targets, current_t, L)
+            fb = add_noise(fb, noise_std)
             x_window = inject_feedback_channel(x_window, fb)
 
         pred = _call_model(model, x_window, target_times, x_branch2=y_branch2)
@@ -409,6 +431,7 @@ def teacher_forcing_step(
 # ---------------------------------------------------------------------------
 # Pushforward training step -- live gradients through unrolled chain
 # ---------------------------------------------------------------------------
+
 
 def pushforward_step(
     model,
@@ -458,15 +481,26 @@ def pushforward_step(
         target_times = extract_target_times(inputs, target_start, actual_K)
 
         y_branch2 = _build_branch2(
-            targets, prev_pred, current_t, L, t_ax, is_tno, noise_std,
+            targets,
+            prev_pred,
+            current_t,
+            L,
+            t_ax,
+            is_tno,
+            noise_std,
         )
 
         if feedback_channel is not None:
             fb = _get_feedback(targets, prev_pred, current_t, L, t_ax)
+            fb = add_noise(fb, noise_std)
             x_window = inject_feedback_channel(x_window, fb)
 
         pred = _call_model(
-            model, x_window, target_times, use_checkpointing, x_branch2=y_branch2,
+            model,
+            x_window,
+            target_times,
+            use_checkpointing,
+            x_branch2=y_branch2,
         )
 
         if pred.shape[t_ax] > actual_K:
@@ -484,6 +518,7 @@ def pushforward_step(
 # ---------------------------------------------------------------------------
 # Rollout training step (one batch) -- sequential chain from t=0
 # ---------------------------------------------------------------------------
+
 
 def rollout_step(
     model,
@@ -535,15 +570,26 @@ def rollout_step(
         target_times = extract_target_times(inputs, target_start, actual_K)
 
         y_branch2 = _build_branch2(
-            targets, prev_pred, current_t, L, t_ax, is_tno, noise_std,
+            targets,
+            prev_pred,
+            current_t,
+            L,
+            t_ax,
+            is_tno,
+            noise_std,
         )
 
         if feedback_channel is not None:
             fb = _get_feedback(targets, prev_pred, current_t, L, t_ax)
+            fb = add_noise(fb, noise_std)
             x_window = inject_feedback_channel(x_window, fb)
 
         pred = _call_model(
-            model, x_window, target_times, use_checkpointing, x_branch2=y_branch2,
+            model,
+            x_window,
+            target_times,
+            use_checkpointing,
+            x_branch2=y_branch2,
         )
 
         if pred.shape[t_ax] > actual_K:
@@ -563,6 +609,7 @@ def rollout_step(
 # ---------------------------------------------------------------------------
 # Full autoregressive validation (all timesteps)
 # ---------------------------------------------------------------------------
+
 
 @torch.no_grad()
 def ar_validate_full_rollout(
@@ -601,7 +648,9 @@ def ar_validate_full_rollout(
                 y_branch2 = slice_target_window(targets, current_t, L)
             elif prev_pred.shape[t_ax] >= L:
                 y_branch2 = prev_pred.narrow(
-                    t_ax, prev_pred.shape[t_ax] - L, L,
+                    t_ax,
+                    prev_pred.shape[t_ax] - L,
+                    L,
                 )
             else:
                 need = L - prev_pred.shape[t_ax]
@@ -637,7 +686,9 @@ def ar_validate_full_rollout(
     elif pred_full.shape[t_ax] < total_T:
         deficit = total_T - pred_full.shape[t_ax]
         pad_slice = slice_target_window(
-            targets, pred_full.shape[t_ax], deficit,
+            targets,
+            pred_full.shape[t_ax],
+            deficit,
         )
         pred_full = torch.cat([pred_full, pad_slice], dim=t_ax)
 

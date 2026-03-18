@@ -696,6 +696,12 @@ def main(cfg: DictConfig) -> None:
                 logger.info(f"  Noise: std={ar_noise_std}")
             if ar_feedback:
                 logger.info(f"  Feedback channel: enabled")
+            if not is_tno and not ar_feedback:
+                logger.warning(
+                    "Autoregressive training without TNO or feedback channel: "
+                    "the model will not receive its own predictions as input. "
+                    "Set autoregressive.use_feedback_channel: true for real AR feedback."
+                )
             logger.info("=" * 80)
     else:
         total_epochs = cfg.training.epochs
