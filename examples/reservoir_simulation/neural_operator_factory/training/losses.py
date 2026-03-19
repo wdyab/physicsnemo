@@ -379,7 +379,10 @@ def get_loss_function(loss_config, variable=None):
 
     # Physics losses
     physics_cfg = loss_config.get("physics", None)
-    physics_losses = build_physics_losses(physics_cfg, variable=variable)
+    default_metric = types[0] if types else "relative_l2"
+    physics_losses = build_physics_losses(
+        physics_cfg, variable=variable, default_metric=default_metric
+    )
 
     return UnifiedLoss(
         types=types,

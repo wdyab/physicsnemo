@@ -543,5 +543,128 @@ class TestARWindow:
         assert loss > 0
 
 
+# ===================================================================
+# Mass conservation metric options
+# ===================================================================
+
+
+class TestMassConservationMetrics:
+    """Tests for configurable metric in MassConservationLoss."""
+
+    @pytest.fixture
+    def reservoir_data(self):
+        """Simple 2D reservoir data for metric tests."""
+        inputs, target, pred = _build_2d_reservoir(T=3)
+        pred = pred + 0.05 * torch.randn_like(pred)
+        return inputs, target, pred
+
+    @pytest.mark.parametrize("metric", ["relative_l2", "mse", "l1", "huber"])
+    def test_all_metrics_run(self, metric, reservoir_data):
+        inputs, target, pred = reservoir_data
+        fn = MassConservationLoss(metric=metric)
+        loss = fn(pred, target, inputs)
+        assert not torch.isnan(loss)
+        assert loss > 0
+
+    def test_invalid_metric_raises(self):
+        with pytest.raises(ValueError, match="metric must be"):
+            MassConservationLoss(metric="invalid")
+
+    def test_default_metric_is_relative_l2(self):
+        fn = MassConservationLoss()
+        assert fn.metric == "relative_l2"
+
+    def test_mse_metric_value(self):
+        """MSE metric on integrated quantities should match hand calculation."""
+        inputs, target, _ = _build_2d_reservoir(T=1)
+        pred = target.clone()
+        pred[0, 0, 0, 0] += 1.0
+        fn = MassConservationLoss(use_cell_volumes=True, metric="mse")
+        loss = fn(pred, target, inputs)
+        # M_true = 0.5 * 3300 = 1650, M_pred = 1650 + 50 = 1700
+        # MSE over time (T=1): (1650 - 1700)^2 = 2500
+        expected = 2500.0
+        assert abs(loss.item() - expected) < 1.0
+
+    def test_l1_metric_value(self):
+        inputs, target, _ = _build_2d_reservoir(T=1)
+        pred = target.clone()
+        pred[0, 0, 0, 0] += 1.0
+        fn = MassConservationLoss(use_cell_volumes=True, metric="l1")
+        loss = fn(pred, target, inputs)
+        # L1: |1650 - 1700| = 50
+        expected = 50.0
+        assert abs(loss.item() - expected) < 0.1
+
+    def test_different_metrics_give_different_values(self, reservoir_data):
+        inputs, target, pred = reservoir_data
+        losses = {}
+        for metric in ["relative_l2", "mse", "l1"]:
+            fn = MassConservationLoss(metric=metric)
+            losses[metric] = fn(pred, target, inputs).item()
+        assert losses["mse"] != losses["l1"]
+        assert losses["relative_l2"] != losses["mse"]
+
+
+class TestMetricInheritance:
+    """Tests for metric inheritance from data loss via factory."""
+
+    def test_null_inherits_first_data_loss(self):
+        cfg = {
+            "mass_conservation": {"enabled": True, "weight": 1.0, "metric": None},
+        }
+        result = build_physics_losses(cfg, default_metric="mse")
+        mod, _ = result["mass_conservation"]
+        assert mod.metric == "mse"
+
+    def test_null_inherits_relative_l2_by_default(self):
+        cfg = {
+            "mass_conservation": {"enabled": True, "weight": 1.0},
+        }
+        result = build_physics_losses(cfg)
+        mod, _ = result["mass_conservation"]
+        assert mod.metric == "relative_l2"
+
+    def test_explicit_metric_overrides_default(self):
+        cfg = {
+            "mass_conservation": {"enabled": True, "weight": 1.0, "metric": "l1"},
+        }
+        result = build_physics_losses(cfg, default_metric="mse")
+        mod, _ = result["mass_conservation"]
+        assert mod.metric == "l1"
+
+    def test_factory_end_to_end_inheritance(self):
+        from training.losses import get_loss_function
+
+        cfg = {
+            "types": ["mse"],
+            "weights": [1.0],
+            "physics": {
+                "mass_conservation": {"enabled": True, "weight": 0.5},
+            },
+        }
+        fn = get_loss_function(cfg, variable="saturation")
+        mod, _ = fn._physics_losses["mass_conservation"]
+        assert mod.metric == "mse"
+
+    def test_factory_explicit_override(self):
+        from training.losses import get_loss_function
+
+        cfg = {
+            "types": ["mse"],
+            "weights": [1.0],
+            "physics": {
+                "mass_conservation": {
+                    "enabled": True,
+                    "weight": 0.5,
+                    "metric": "relative_l2",
+                },
+            },
+        }
+        fn = get_loss_function(cfg, variable="saturation")
+        mod, _ = fn._physics_losses["mass_conservation"]
+        assert mod.metric == "relative_l2"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -113,7 +113,7 @@ arch:
     branch1:
       encoder: spatial           # 'spatial' (convolutional) or 'mlp' (flat)
       num_fourier_layers: 0   # 0 = pure UNet/Conv mode
-      num_unet_layers: 1      # 3 U-Net layers 
+      num_unet_layers: 2      # 3 U-Net layers 
       num_conv_layers: 0
       modes1: 8               # H or X dimension - Only for Fourier layers
       modes2: 8               # W or Y dimension - Only for Fourier layers
@@ -132,7 +132,7 @@ arch:
       num_layers: 1
       # --- spatial settings (used when encoder=spatial) ---
       num_fourier_layers: 0
-      num_unet_layers: 1
+      num_unet_layers: 2
       num_conv_layers: 0
       modes1: 10
       modes2: 10
@@ -153,15 +153,12 @@ arch:
     decoder_type: mlp         # 'mlp' or 'conv'
     decoder_width: 128
     decoder_layers: 2
-    decoder_activation_fn: relu
-
-
+    decoder_activation_fn: relu  
 
 
 # =============================================================================
 # Loss Function Configuration
 # =============================================================================
-
 loss:
   # Data losses: mse, l1, relative_l2, huber
   types: [relative_l2]
@@ -170,15 +167,17 @@ loss:
   huber_delta: 1.0
 
   # Spatial derivative regularization
+  # Usage: dims: [dx] or [dx, dy] (2D) or [dx, dy, dz] (3D)
   derivative:
     enabled: false
     weight: 0.5
     dims: [dx]
-    metric: null
+    metric: null              # null = inherit first data loss type
 
   # Physics-informed losses
   physics:
     mass_conservation:
-      enabled: false
-      weight: 1.0
-      use_cell_volumes: false
+      enabled: true
+      weight: 0.5
+      use_cell_volumes: true
+      metric: null              # null = inherit first data loss; or mse, l1, relative_l2, huber

@@ -210,9 +210,21 @@ class MassConservationLoss(nn.Module):
         Numerical stability constant.
     """
 
-    def __init__(self, use_cell_volumes: bool = False, eps: float = 1e-8):
+    VALID_METRICS = {"relative_l2", "mse", "l1", "huber"}
+
+    def __init__(
+        self,
+        use_cell_volumes: bool = False,
+        metric: str = "relative_l2",
+        eps: float = 1e-8,
+    ):
         super().__init__()
         self.use_cell_volumes = use_cell_volumes
+        if metric not in self.VALID_METRICS:
+            raise ValueError(
+                f"metric must be one of {self.VALID_METRICS}, got '{metric}'"
+            )
+        self.metric = metric
         self.eps = eps
         self._cell_volumes: Optional[Tensor] = None
         self._volumes_device: Optional[torch.device] = None
@@ -246,12 +258,22 @@ class MassConservationLoss(nn.Module):
             weight = weight * spatial_mask.float()
         w = weight.unsqueeze(0).unsqueeze(-1)
 
-        m_pred = (pred * w).sum(dim=spatial_dims)
-        m_true = (target * w).sum(dim=spatial_dims)
+        m_pred = (pred * w).sum(dim=spatial_dims)  # (B, T)
+        m_true = (target * w).sum(dim=spatial_dims)  # (B, T)
 
-        diff_norm = torch.norm(m_true - m_pred, p=2, dim=-1)
-        true_norm = torch.norm(m_true, p=2, dim=-1)
-        per_sample = diff_norm / (true_norm + self.eps)
+        if self.metric == "relative_l2":
+            diff_norm = torch.norm(m_true - m_pred, p=2, dim=-1)
+            true_norm = torch.norm(m_true, p=2, dim=-1)
+            per_sample = diff_norm / (true_norm + self.eps)
+        elif self.metric == "mse":
+            per_sample = ((m_true - m_pred) ** 2).mean(dim=-1)
+        elif self.metric == "l1":
+            per_sample = (m_true - m_pred).abs().mean(dim=-1)
+        elif self.metric == "huber":
+            per_sample = torch.nn.functional.smooth_l1_loss(
+                m_pred, m_true, reduction="none"
+            ).mean(dim=-1)
+
         return per_sample.mean()
 
 
@@ -264,7 +286,7 @@ _PHYSICS_LOSS_REGISTRY: Dict[str, type] = {
 }
 
 
-def build_physics_losses(physics_config, variable=None):
+def build_physics_losses(physics_config, variable=None, default_metric="relative_l2"):
     """Instantiate physics losses from the loss.physics config block."""
     if physics_config is None:
         return {}
@@ -284,6 +306,8 @@ def build_physics_losses(physics_config, variable=None):
         if name == "mass_conservation":
             kwargs["use_cell_volumes"] = bool(sub.get("use_cell_volumes", False))
             kwargs["eps"] = float(sub.get("eps", 1e-8))
+            metric = sub.get("metric", None)
+            kwargs["metric"] = metric if metric is not None else default_metric
             if variable is not None and variable.lower() == "pressure":
                 warnings.warn(
                     "mass_conservation loss is enabled for variable='pressure'. "
