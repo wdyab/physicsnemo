@@ -796,7 +796,6 @@ def main(cfg: DictConfig) -> None:
                             inputs,
                             targets,
                             loss_fn,
-                            use_checkpointing=ar_checkpointing,
                             **ar_common,
                         )
                 else:

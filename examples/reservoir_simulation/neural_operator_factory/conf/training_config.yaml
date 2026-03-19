@@ -38,7 +38,7 @@ data:
   
   # Variable name — used for checkpoint naming and metric selection, not file resolution.
   # Choices: 'pressure', 'saturation'
-  variable: pressure
+  variable: saturation
 
   # Input/output file patterns ({mode} is replaced with train/val/test).
   # Available Norne dataset files:
@@ -50,11 +50,11 @@ data:
   # For CO2 dataset: set input_file/output_file to null and use variable instead
   #   (resolves to dP_{mode}_a.pt / dP_{mode}_u.pt or sg_* automatically)
   input_file: norne_{mode}_a.pt
-  output_file: norne_{mode}_pressure.pt
+  output_file: norne_{mode}_swat.pt
 
   # z-score normalize inputs and outputs.
   # Recommended: true for pressure (large dynamic range), false for saturation (bounded [0,1]).
-  normalize: true
+  normalize: false
   num_workers: 2
 
   # ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ data:
 
 training:
   batch_size: 2
-  epochs: 100                   # used by full_mapping only; ignored by autoregressive
+  epochs: 100                   # used by full_mapping only; ignored if regime is autoregressive below 
   initial_lr: 0.001
   checkpoint_dir: ./checkpoints
   validate_freq: 5
@@ -88,7 +88,7 @@ training:
   patience: 20
   use_amp: false
   use_graphs: true
-  resume_from_checkpoint: ./checkpoints/best_model_pressure_deeponet3d_tno_spatial.pth
+  # resume_from_checkpoint: ./checkpoints/best_model_pressure_deeponet3d_tno_spatial.pth
 
   # ---------------------------------------------------------------------------
   # Training Regime
@@ -127,19 +127,20 @@ training:
     # Curriculum linearly ramps from 1 to this value over pushforward_epochs.
     max_unroll: 5
 
-    # Noise standard deviation injected into autoregressive feedback during
-    # training (both TNO branch2 and feedback channel). Makes the model
-    # robust to its own prediction errors during rollout. 0 disables.
+    # Noise standard deviation injected into branch2 / feedback during training.
+    # Positive values add Gaussian noise for robustness; 0 disables.
+    # Set to 0.01 to 0.05 during rollout training to regularize model against error accumulation
     noise_std: 0.0
 
-    # Feedback channel: append previous prediction as an extra input channel.
-    # Required for non-TNO models (U-DeepONet, FNO, etc.) to enable real
-    # autoregressive feedback. TNO models already receive feedback via
-    # branch2, so this is redundant for TNO.
+    # Feedback channel: append previous prediction as an extra input channel in autoregressive training.
+    # With a TNO model, the feedback channel is appended to the main branch (branch1).
+    # Set to false to disable. Set to true to enable with all other models in AR training.
     use_feedback_channel: false
 
-    # Gradient checkpointing: trade compute for memory during rollout / pushforward.
-    gradient_checkpointing: true
+    # Gradient checkpointing: trade compute (speed) for memory during pushforward.
+    # Only applies to pushforward (live-gradient chains need it for memory).
+    # Rollout and teacher forcing do not use it (each window is independent).
+    gradient_checkpointing: false
 
     # Factor to reset learning rate at each stage transition.
     # 1.0 = no reset; < 1.0 = scale LR up relative to current schedule.
