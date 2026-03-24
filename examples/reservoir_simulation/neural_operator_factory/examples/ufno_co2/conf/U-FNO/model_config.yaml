@@ -45,7 +45,7 @@ arch:
     lifting_width: 36
 
     decoder_type: mlp
-    decoder_layers: 1
+    decoder_layers: 2
     decoder_width: 128
     decoder_activation_fn: relu
 
@@ -87,7 +87,7 @@ loss:
   derivative:
     enabled: true
     weight: 0.5
-    dims: [dx]
+    dims: [dy]
     metric: null
 
   physics:

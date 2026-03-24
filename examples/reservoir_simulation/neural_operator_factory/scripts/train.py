@@ -179,6 +179,23 @@ _DENORM_REGISTRY = {
 }
 
 
+def _get_batch_mask(inputs, mask_type, static_mask):
+    """Get spatial mask for the current batch.
+
+    For most datasets the mask is static (ACTNUM or output-zeros) and
+    shared across all samples.  For the CO2 sequestration dataset,
+    each sample has a different reservoir thickness, so the mask must
+    be derived per-batch from the permeability channel (channel 0).
+    We take the union across the batch so that all active cells in any
+    sample are included.
+    """
+    if mask_type == "co2":
+        # inputs: (B, H, W, T, C) — channel 0 is permeability,
+        # non-zero indicates an active reservoir cell.
+        return (inputs[:, :, :, 0, 0] != 0).any(dim=0)  # (H, W)
+    return static_mask
+
+
 # Registry of validation metric functions (numpy-based, operate on flat arrays).
 def _rmse_np(y_pred, y_true):
     return float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
@@ -755,12 +772,14 @@ def main(cfg: DictConfig) -> None:
                 targets = targets.to(dist.device)
                 optimizer.zero_grad()
 
+                batch_mask = _get_batch_mask(inputs, mask_type, static_mask)
+
                 if regime == "autoregressive":
                     stage = get_training_stage(epoch, tf_epochs, pf_epochs, ro_epochs)
                     ar_common = dict(
                         L=ar_L,
                         K=ar_K,
-                        spatial_mask=static_mask,
+                        spatial_mask=batch_mask,
                         is_tno=is_tno,
                         noise_std=ar_noise_std,
                         feedback_channel=1 if ar_feedback else None,
@@ -804,7 +823,7 @@ def main(cfg: DictConfig) -> None:
                         with autocast():
                             pred = model(inputs)
                             loss = loss_fn(
-                                pred, targets, inputs, spatial_mask=static_mask
+                                pred, targets, inputs, spatial_mask=batch_mask
                             )
                         scaler.scale(loss).backward()
                         scaler.step(optimizer)
@@ -821,7 +840,7 @@ def main(cfg: DictConfig) -> None:
                         continue
                     else:
                         pred = model(inputs)
-                        loss = loss_fn(pred, targets, inputs, spatial_mask=static_mask)
+                        loss = loss_fn(pred, targets, inputs, spatial_mask=batch_mask)
 
                 # Backward + step
                 if regime == "autoregressive":
@@ -883,6 +902,8 @@ def main(cfg: DictConfig) -> None:
                         inputs = inputs.to(dist.device)
                         targets = targets.to(dist.device)
 
+                        val_batch_mask = _get_batch_mask(inputs, mask_type, static_mask)
+
                         # Forward pass — same regime as training
                         if regime == "autoregressive":
                             pred = ar_validate_full_rollout(
@@ -900,11 +921,11 @@ def main(cfg: DictConfig) -> None:
                         if cfg.training.use_amp:
                             with autocast():
                                 val_loss = val_loss_fn(
-                                    pred, targets, inputs, spatial_mask=static_mask
+                                    pred, targets, inputs, spatial_mask=val_batch_mask
                                 )
                         else:
                             val_loss = val_loss_fn(
-                                pred, targets, inputs, spatial_mask=static_mask
+                                pred, targets, inputs, spatial_mask=val_batch_mask
                             )
 
                         # Aggregate validation loss across GPUs

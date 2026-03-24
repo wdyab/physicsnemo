@@ -79,11 +79,11 @@ CHECKPOINT=checkpoints/best_model_saturation_ufno_custom.pth \
 
 ### Gas Saturation — Test Set
 
-| Model | MPE (mean) | MPE (std) | R² plume (mean) |
-|-------|-----------|----------|----------------|
-| FNO | 0.0276 | 0.0160 | 0.961 |
-| Conv-FNO | 0.0224 | 0.0125 | 0.970 |
-| **U-FNO** | **0.0161** | **0.0105** | **0.981** |
+| Model      | MPE (mean) | MPE (std)  | R² plume (mean) |
+|------------|------------|------------|-----------------|
+| FNO        | 0.0276     | 0.0160     | 0.961           |
+| Conv-FNO   | 0.0224     | 0.0125     | 0.970           |
+| **U-FNO**  | **0.0161** | **0.0105** | **0.981**       |
 
 ### Pressure Buildup — Test Set
 
