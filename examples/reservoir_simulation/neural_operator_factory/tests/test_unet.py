@@ -116,7 +116,6 @@ class TestUNet2D:
         assert isinstance(param_count, int)
 
 
-
 class TestUNet3D:
     """Tests for UNet3D model."""
 
@@ -218,7 +217,6 @@ class TestUNet3D:
         # UNet3D should have more parameters than UNet2D with same config
         model_2d = UNet2D(input_channels=32, output_channels=32).to(device)
         assert model.count_params() > model_2d.count_params()
-
 
 
 class TestUNetIntegration:

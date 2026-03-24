@@ -88,7 +88,7 @@ training:
   patience: 20
   use_amp: false
   use_graphs: true
-  # resume_from_checkpoint: ./checkpoints/best_model_pressure_deeponet3d_tno_spatial.pth
+  resume_from_checkpoint: ./checkpoints/best_model_saturation_deeponet3d_tno_spatial.pth
 
   # ---------------------------------------------------------------------------
   # Training Regime
