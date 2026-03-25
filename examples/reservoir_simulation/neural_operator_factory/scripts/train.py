@@ -179,21 +179,22 @@ _DENORM_REGISTRY = {
 }
 
 
-def _get_batch_mask(inputs, mask_type, static_mask):
-    """Get spatial mask for the current batch.
+def _get_batch_mask(inputs, mask_channel, mask_per_sample, static_mask):
+    """Construct the spatial mask for the current batch.
 
-    For most datasets the mask is static (ACTNUM or output-zeros) and
-    shared across all samples.  For the CO2 sequestration dataset,
-    each sample has a different reservoir thickness, so the mask must
-    be derived per-batch from the permeability channel (channel 0).
-    We take the union across the batch so that all active cells in any
-    sample are included.
+    Works for any structured-grid dataset (3D or 4D).  When the mask
+    is static (identical across all samples), uses the cached tensor.
+    When it varies per sample, constructs from the input tensor at
+    batch time, taking the union so every active cell is included.
+    Returns *None* when no mask channel is available.
     """
-    if mask_type == "co2":
-        # inputs: (B, H, W, T, C) — channel 0 is permeability,
-        # non-zero indicates an active reservoir cell.
-        return (inputs[:, :, :, 0, 0] != 0).any(dim=0)  # (H, W)
-    return static_mask
+    if mask_channel is None:
+        return None
+    if not mask_per_sample:
+        return static_mask
+    # Per-sample: inputs shape is (B, *spatial, T, C).
+    # Extract mask channel at t=0, take union across batch.
+    return (inputs[..., 0, mask_channel] != 0).any(dim=0)
 
 
 # Registry of validation metric functions (numpy-based, operate on flat arrays).
@@ -280,13 +281,16 @@ def main(cfg: DictConfig) -> None:
         variable=cfg.data.get("variable", None),
         expected_dimensions=expected_dimensions,
         use_mask=cfg.data.get("mask_enabled", False),
+        mask_channel=cfg.data.get("mask_channel", None),
     )
 
-    # Get static mask (move to GPU if available)
-    static_mask = train_loader.dataset.get_static_mask()
+    # Masking metadata from dataset
+    ds = train_loader.dataset
+    mask_channel = getattr(ds, "mask_channel", None)
+    mask_per_sample = getattr(ds, "mask_per_sample", False)
+    static_mask = ds.get_static_mask()
     if static_mask is not None:
         static_mask = static_mask.to(dist.device)
-    mask_type = getattr(train_loader.dataset, "mask_type", None)
 
     # Detect TNO variant
     regime = cfg.training.get("regime", "full_mapping").lower()
@@ -772,7 +776,9 @@ def main(cfg: DictConfig) -> None:
                 targets = targets.to(dist.device)
                 optimizer.zero_grad()
 
-                batch_mask = _get_batch_mask(inputs, mask_type, static_mask)
+                batch_mask = _get_batch_mask(
+                    inputs, mask_channel, mask_per_sample, static_mask
+                )
 
                 if regime == "autoregressive":
                     stage = get_training_stage(epoch, tf_epochs, pf_epochs, ro_epochs)
@@ -902,7 +908,9 @@ def main(cfg: DictConfig) -> None:
                         inputs = inputs.to(dist.device)
                         targets = targets.to(dist.device)
 
-                        val_batch_mask = _get_batch_mask(inputs, mask_type, static_mask)
+                        val_batch_mask = _get_batch_mask(
+                            inputs, mask_channel, mask_per_sample, static_mask
+                        )
 
                         # Forward pass — same regime as training
                         if regime == "autoregressive":
@@ -964,20 +972,9 @@ def main(cfg: DictConfig) -> None:
                                 )
                             _, _, metric_fn = _METRIC_REGISTRY[val_metric_choice]
 
-                            mask_np = (
-                                static_mask.cpu().numpy()
-                                if static_mask is not None
-                                else None
-                            )
-
                             for i in range(pred_denorm.shape[0]):
-                                if mask_np is not None:
-                                    # ACTNUM static mask
-                                    y_pred = pred_denorm[i][mask_np]
-                                    y_true = targets_denorm[i][mask_np]
-                                elif mask_type == "co2":
-                                    # CO2 per-sample mask from channel 0
-                                    mask_i = inputs_cpu[i, :, :, 0, 0] != 0
+                                if mask_channel is not None:
+                                    mask_i = inputs_cpu[i, ..., 0, mask_channel] != 0
                                     y_pred = pred_denorm[i][mask_i]
                                     y_true = targets_denorm[i][mask_i]
                                 else:

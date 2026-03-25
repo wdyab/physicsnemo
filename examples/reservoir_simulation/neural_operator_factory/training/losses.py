@@ -242,28 +242,13 @@ class UnifiedLoss(nn.Module):
     # Derivative regularisation (dimension-agnostic)
     # -----------------------------------------------------------------------
 
-    @staticmethod
-    def _detect_active_cells(target):
-        """Auto-detect active cells from the target tensor.
-
-        A cell is considered inactive if its value is exactly zero across
-        all timesteps (last dim).  Returns a boolean mask over spatial
-        dims, or None if all cells are active or none are active.
-        """
-        active = target[0].abs().sum(dim=-1) != 0  # (*spatial)
-        if active.all() or not active.any():
-            return None
-        return active
-
     def _compute_derivative_loss(self, pred, target, inputs, spatial_mask=None):
         """Compute derivative loss along each configured direction.
 
-        Handles inactive cells robustly: if no explicit spatial_mask is
-        provided, auto-detects inactive cells from the target (cells that
-        are zero across all timesteps).  Then:
-        1. Zeros out inactive cells before differentiation
-        2. Builds a stencil-safe derivative mask requiring all three
-           stencil cells (i, i+1, i+2) to be active
+        When *spatial_mask* is provided, inactive cells are zeroed out
+        before differentiation and a stencil-safe mask ensures all three
+        cells in the central-difference stencil are active.  When no mask
+        is provided the derivative is computed over the full field.
         """
         ndim = pred.dim()
         spatial_ndim = ndim - 2
@@ -272,10 +257,7 @@ class UnifiedLoss(nn.Module):
                 f"Derivative loss requires 2 or 3 spatial dims, got {spatial_ndim}"
             )
 
-        # Use explicit mask if provided, otherwise auto-detect from target
         active_mask = spatial_mask
-        if active_mask is None:
-            active_mask = self._detect_active_cells(target)
 
         deriv_metric = self._deriv_metric or self.loss_types[0]
         total = torch.tensor(0.0, device=pred.device)

@@ -67,10 +67,17 @@ data:
   val_metric: rmse
 
   # mask_enabled: Exclude inactive cells from loss and metrics.
-  #   1) Auto-detects ACTNUM channel if present (any structured-grid dataset)
-  #   2) Falls back to CO2 per-sample channel-0 mask (CO2 dataset only)
-  #   3) Falls back to output-zeros mask (all other datasets)
+  #   Auto-detects the best mask channel from inputs (priority order):
+  #   1) ACTNUM channel (binary {0,1}, static across time)
+  #   2) Non-zero channel fallback (static zero pattern across time)
+  #   3) No mask (all cells active)
+  #   If the mask varies across samples, it is constructed per-batch.
   mask_enabled: true
+
+  # mask_channel: Explicit input channel index for the active-cell mask.
+  #   null = auto-detect (recommended).  Set to an integer to override.
+  #   Example: 5 for Norne ACTNUM, 0 for CO2 permeability.
+  mask_channel: null
 
   # denormalize_fn: Name of a denormalization function to apply to
   #   predictions and targets before computing validation metrics.
