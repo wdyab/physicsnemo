@@ -44,7 +44,7 @@ set -euo pipefail
 
 cd "$SLURM_SUBMIT_DIR"
 
-mkdir -p logs
+mkdir -p logs visualizations
 
 VARIABLE="${1:-saturation}"
 
@@ -67,10 +67,10 @@ echo "  Node:       $(hostname)"
 echo "========================================"
 
 if [ "$VARIABLE" = "pressure" ]; then
-    python3 scripts/evaluate_co2_pressure.py \
+    python3 examples/ufno_co2/evaluate_pressure.py \
         --checkpoint "$CHECKPOINT"
 elif [ "$VARIABLE" = "saturation" ]; then
-    python3 scripts/evaluate_co2_saturation.py \
+    python3 examples/ufno_co2/evaluate_saturation.py \
         --checkpoint "$CHECKPOINT"
 else
     echo "ERROR: Unknown variable '$VARIABLE'. Use 'pressure' or 'saturation'."

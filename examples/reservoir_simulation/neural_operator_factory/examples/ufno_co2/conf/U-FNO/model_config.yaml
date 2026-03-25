@@ -63,8 +63,8 @@ arch:
       num_fourier_layers: 0
       num_unet_layers: 1
       num_conv_layers: 0
-      modes1: 12
-      modes2: 12
+      modes1: 10
+      modes2: 10
       kernel_size: 3
       dropout: 0.0
       unet_impl: custom
@@ -76,7 +76,7 @@ arch:
       activation_fn: sin
     decoder_type: mlp
     decoder_width: 128
-    decoder_layers: 2
+    decoder_layers: 1
     decoder_activation_fn: relu
 
 loss:

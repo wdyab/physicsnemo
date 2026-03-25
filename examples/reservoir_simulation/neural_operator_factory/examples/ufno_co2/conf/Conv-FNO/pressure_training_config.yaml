@@ -40,6 +40,7 @@ data:
   num_workers: 4
   val_metric: mre
   mask_enabled: true
+  mask_channel: 0
   denormalize_fn: dnorm_dP
 
 training:

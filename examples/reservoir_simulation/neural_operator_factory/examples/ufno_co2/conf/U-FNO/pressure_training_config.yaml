@@ -41,6 +41,7 @@ data:
   num_workers: 4
   val_metric: mre
   mask_enabled: true
+  mask_channel: 0
   denormalize_fn: dnorm_dP
 
 training:
@@ -83,4 +84,4 @@ compute:
   num_gpus: 8
   distributed: true
   benchmark: true
-  deterministic: false
+  deterministic: trur

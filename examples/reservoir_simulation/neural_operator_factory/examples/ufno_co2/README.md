@@ -75,28 +75,54 @@ CHECKPOINT=checkpoints/best_model_saturation_ufno_custom.pth \
     sbatch examples/ufno_co2/eval.sbatch saturation
 ```
 
-## Expected Results (from paper, Table I.14)
+## Results
 
-### Gas Saturation — Test Set
+### Paper Reference (Table I.14)
 
-| Model      | MPE (mean) | MPE (std)  | R² plume (mean) |
-|------------|------------|------------|-----------------|
-| FNO        | 0.0276     | 0.0160     | 0.961           |
-| Conv-FNO   | 0.0224     | 0.0125     | 0.970           |
-| **U-FNO**  | **0.0161** | **0.0105** | **0.981**       |
+#### Gas Saturation — Test Set
 
-### Pressure Buildup — Test Set
+| Model | MPE (mean) | MPE (std) | R² plume |
+|-------|-----------|----------|----------|
+| FNO | 0.0276 | 0.0160 | 0.961 |
+| Conv-FNO | 0.0224 | 0.0125 | 0.970 |
+| **U-FNO** | **0.0161** | **0.0105** | **0.981** |
 
-| Model | MRE (mean) | MRE (std) | R² (mean) |
-|-------|-----------|----------|-----------|
+#### Pressure Buildup — Test Set
+
+| Model | MRE (mean) | MRE (std) | R² |
+|-------|-----------|----------|-----|
 | FNO | 0.0082 | 0.0052 | 0.989 |
 | Conv-FNO | 0.0078 | 0.0048 | 0.990 |
 | **U-FNO** | **0.0068** | **0.0045** | **0.992** |
 
+### NOF Reproduction (this example)
+
+Results below are from preliminary training with old base configs
+(`conf/`), not the paper-matching example configs. Updated results
+from the example configs will replace these once training completes.
+
+#### Gas Saturation — U-FNO (preliminary, 500 test samples)
+
+| Metric | Value | Paper target |
+|--------|-------|-------------|
+| MPE | 0.0709 +/- 0.0078 | 0.0161 |
+| R² | 0.929 +/- 0.031 | 0.981 |
+
+#### Pressure Buildup — U-FNO (preliminary, 500 test samples)
+
+| Metric | Value | Paper target |
+|--------|-------|-------------|
+| MRE | 0.146 +/- 0.072 | 0.0068 |
+| R² | -0.925 +/- 1.88 | 0.992 |
+
+FNO and Conv-FNO results pending training completion.
+
 ## Loss Function
 
-Matches the paper's Equation 12: relative L2 loss + radial derivative regularization.
-Active cell masking is applied (cells outside the reservoir are zero-padded).
+Matches the paper's Equation 12: relative L2 loss +
+radial derivative regularization.
+Active cell masking is applied
+(cells outside the reservoir are zero-padded).
 
 ## Files
 
@@ -105,6 +131,8 @@ ufno_co2/
 ├── README.md
 ├── train.sbatch                       # SLURM training (8 GPU)
 ├── eval.sbatch                        # SLURM evaluation (1 GPU)
+├── evaluate_pressure.py               # Pressure eval with dnorm_dP
+├── evaluate_saturation.py             # Saturation eval with MPE
 └── conf/
     ├── FNO/                           # Pure FNO (6 Fourier layers)
     │   ├── model_config.yaml
