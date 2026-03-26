@@ -97,25 +97,16 @@ CHECKPOINT=checkpoints/best_model_saturation_ufno_custom.pth \
 
 ### NOF Reproduction (this example)
 
-Results below are from preliminary training with old base configs
-(`conf/`), not the paper-matching example configs. Updated results
-from the example configs will replace these once training completes.
+#### U-FNO — Test Set (500 samples)
 
-#### Gas Saturation — U-FNO (preliminary, 500 test samples)
+| Variable | Metric | **NOF** | **Paper** |
+|----------|--------|---------|-----------|
+| Saturation | MPE | **0.0182** | 0.0161 |
+| | R² | **0.993** | 0.981 |
+| Pressure | MRE | **0.0068** | 0.0068 |
+| | R² | **0.991** | 0.992 |
 
-| Metric | Value | Paper target |
-|--------|-------|-------------|
-| MPE | 0.0709 +/- 0.0078 | 0.0161 |
-| R² | 0.929 +/- 0.031 | 0.981 |
-
-#### Pressure Buildup — U-FNO (preliminary, 500 test samples)
-
-| Metric | Value | Paper target |
-|--------|-------|-------------|
-| MRE | 0.146 +/- 0.072 | 0.0068 |
-| R² | -0.925 +/- 1.88 | 0.992 |
-
-FNO and Conv-FNO results pending training completion.
+FNO and Conv-FNO results pending.
 
 ## Loss Function
 

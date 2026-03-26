@@ -253,10 +253,14 @@ class MassConservationLoss(nn.Module):
             )
 
         vol = self._get_cell_volumes(inputs, spatial_ndim)
-        weight = vol
         if spatial_mask is not None:
-            weight = weight * spatial_mask.float()
-        w = weight.unsqueeze(0).unsqueeze(-1)
+            # Reduce per-sample (B, *spatial) to union (*spatial)
+            m = spatial_mask
+            if m.dim() == pred.dim() - 1:
+                m = m.any(dim=0)
+            w = (vol * m.float()).unsqueeze(0).unsqueeze(-1)
+        else:
+            w = vol.unsqueeze(0).unsqueeze(-1)
 
         m_pred = (pred * w).sum(dim=spatial_dims)  # (B, T)
         m_true = (target * w).sum(dim=spatial_dims)  # (B, T)

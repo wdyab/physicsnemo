@@ -183,9 +183,9 @@ def _get_batch_mask(inputs, mask_channel, mask_per_sample, static_mask):
     """Construct the spatial mask for the current batch.
 
     Works for any structured-grid dataset (3D or 4D).  When the mask
-    is static (identical across all samples), uses the cached tensor.
-    When it varies per sample, constructs from the input tensor at
-    batch time, taking the union so every active cell is included.
+    is static (identical across all samples), returns ``(*spatial)``.
+    When it varies per sample, returns ``(B, *spatial)`` so each
+    sample's loss is computed only on its own active cells.
     Returns *None* when no mask channel is available.
     """
     if mask_channel is None:
@@ -193,8 +193,8 @@ def _get_batch_mask(inputs, mask_channel, mask_per_sample, static_mask):
     if not mask_per_sample:
         return static_mask
     # Per-sample: inputs shape is (B, *spatial, T, C).
-    # Extract mask channel at t=0, take union across batch.
-    return (inputs[..., 0, mask_channel] != 0).any(dim=0)
+    # Returns (B, *spatial) boolean mask.
+    return inputs[..., 0, mask_channel] != 0
 
 
 # Registry of validation metric functions (numpy-based, operate on flat arrays).

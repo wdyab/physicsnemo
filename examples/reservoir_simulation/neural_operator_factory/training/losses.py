@@ -190,42 +190,69 @@ class UnifiedLoss(nn.Module):
     # Data losses
     # -----------------------------------------------------------------------
 
-    def _apply_mask(self, tensor, spatial_mask):
-        """Return only active-cell values, or full tensor if no mask."""
-        if spatial_mask is None:
-            return tensor
-        mask_expanded = spatial_mask.unsqueeze(0).unsqueeze(-1).expand_as(tensor)
-        return tensor[mask_expanded]
+    @staticmethod
+    def _is_per_sample_mask(spatial_mask, pred):
+        """True when mask has a leading batch dimension matching pred."""
+        return (
+            spatial_mask.dim() == pred.dim() - 1
+            and spatial_mask.shape[0] == pred.shape[0]
+        )
+
+    @staticmethod
+    def _expand_mask(spatial_mask, pred):
+        """Expand spatial mask to match pred shape, per-sample aware.
+
+        Accepts ``(*spatial)`` (one mask for all samples) or
+        ``(B, *spatial)`` (per-sample masks).  Returns a boolean tensor
+        broadcastable to ``pred`` shape ``(B, *spatial, T)``.
+        """
+        if UnifiedLoss._is_per_sample_mask(spatial_mask, pred):
+            return spatial_mask.unsqueeze(-1).expand_as(pred)
+        else:
+            return spatial_mask.unsqueeze(0).unsqueeze(-1).expand_as(pred)
 
     def _compute_single_loss(self, pred, target, loss_type, spatial_mask=None):
-        if loss_type == "mse":
-            diff = (pred - target) ** 2
-            diff = self._apply_mask(diff, spatial_mask)
-            return diff.mean() if self.reduction == "mean" else diff.sum()
+        """Compute a single loss term with proper per-sample masking.
 
-        elif loss_type == "l1":
-            diff = torch.abs(pred - target)
-            diff = self._apply_mask(diff, spatial_mask)
-            return diff.mean() if self.reduction == "mean" else diff.sum()
-
-        elif loss_type == "huber":
-            diff = F.smooth_l1_loss(
-                pred, target, reduction="none", beta=self.huber_delta
-            )
-            diff = self._apply_mask(diff, spatial_mask)
+        When ``spatial_mask`` is provided, only active cells contribute
+        to the loss.  For ``relative_l2``, active cells are selected
+        per-sample so that norms are computed exclusively on active
+        values (not diluted by zeros).  Supports both ``(*spatial)``
+        and ``(B, *spatial)`` masks.
+        """
+        if loss_type in ("mse", "l1", "huber"):
+            if loss_type == "mse":
+                diff = (pred - target) ** 2
+            elif loss_type == "l1":
+                diff = torch.abs(pred - target)
+            else:
+                diff = F.smooth_l1_loss(
+                    pred, target, reduction="none", beta=self.huber_delta
+                )
+            if spatial_mask is not None:
+                mask_exp = self._expand_mask(spatial_mask, diff)
+                diff = diff[mask_exp]
             return diff.mean() if self.reduction == "mean" else diff.sum()
 
         elif loss_type == "relative_l2":
-            if spatial_mask is not None:
-                mask_exp = spatial_mask.unsqueeze(0).unsqueeze(-1).expand_as(pred)
-                pred = pred * mask_exp
-                target = target * mask_exp
             batch_size = pred.shape[0]
-            pred_flat = pred.reshape(batch_size, -1)
-            target_flat = target.reshape(batch_size, -1)
-            diff_norm = torch.norm(pred_flat - target_flat, p=2, dim=1)
-            target_norm = torch.norm(target_flat, p=2, dim=1)
-            loss = diff_norm / (target_norm + self.eps)
+            losses = []
+            for i in range(batch_size):
+                if spatial_mask is not None:
+                    if self._is_per_sample_mask(spatial_mask, pred):
+                        m = spatial_mask[i]
+                    else:
+                        m = spatial_mask
+                    m_exp = m.unsqueeze(-1).expand_as(pred[i])
+                    p = pred[i][m_exp]
+                    t = target[i][m_exp]
+                else:
+                    p = pred[i].reshape(-1)
+                    t = target[i].reshape(-1)
+                diff_norm = torch.norm(p - t, p=2)
+                target_norm = torch.norm(t, p=2)
+                losses.append(diff_norm / (target_norm + self.eps))
+            loss = torch.stack(losses)
             return loss.mean() if self.reduction == "mean" else loss.sum()
 
         raise ValueError(f"Unknown loss type: {loss_type}")
@@ -242,13 +269,27 @@ class UnifiedLoss(nn.Module):
     # Derivative regularisation (dimension-agnostic)
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _to_union_mask(spatial_mask, pred):
+        """Reduce a per-sample mask ``(B, *spatial)`` to ``(*spatial)``.
+
+        Takes the union (logical OR) across the batch so every cell
+        active in any sample is included.  Static masks ``(*spatial)``
+        are returned unchanged.
+        """
+        if spatial_mask is None:
+            return None
+        if UnifiedLoss._is_per_sample_mask(spatial_mask, pred):
+            return spatial_mask.any(dim=0)
+        return spatial_mask
+
     def _compute_derivative_loss(self, pred, target, inputs, spatial_mask=None):
         """Compute derivative loss along each configured direction.
 
-        When *spatial_mask* is provided, inactive cells are zeroed out
-        before differentiation and a stencil-safe mask ensures all three
-        cells in the central-difference stencil are active.  When no mask
-        is provided the derivative is computed over the full field.
+        Uses the **union** mask for zeroing out inactive cells before
+        differentiation (safe for the stencil) and for the stencil-safe
+        derivative mask.  The derivative metric then receives this
+        ``(*spatial)``-shaped mask for comparison.
         """
         ndim = pred.dim()
         spatial_ndim = ndim - 2
@@ -257,15 +298,13 @@ class UnifiedLoss(nn.Module):
                 f"Derivative loss requires 2 or 3 spatial dims, got {spatial_ndim}"
             )
 
-        active_mask = spatial_mask
+        union_mask = self._to_union_mask(spatial_mask, pred)
 
         deriv_metric = self._deriv_metric or self.loss_types[0]
         total = torch.tensor(0.0, device=pred.device)
 
-        # Zero out inactive cells before computing derivatives so the
-        # stencil does not mix active and inactive values.
-        if active_mask is not None:
-            mask_exp = active_mask.unsqueeze(0).unsqueeze(-1).expand_as(pred)
+        if union_mask is not None:
+            mask_exp = union_mask.unsqueeze(0).unsqueeze(-1).expand_as(pred)
             pred = pred * mask_exp
             target = target * mask_exp
 
@@ -284,15 +323,13 @@ class UnifiedLoss(nn.Module):
             dy_pred = central_difference(pred, tensor_axis, spacing)
             dy_target = central_difference(target, tensor_axis, spacing)
 
-            # Stencil-safe mask: valid only when cells i, i+1, and i+2
-            # along the derivative axis are all active.
             deriv_mask = None
-            if active_mask is not None:
-                mask_axis = tensor_axis - 1  # active_mask has no batch dim
-                n = active_mask.shape[mask_axis]
-                m_left = active_mask.narrow(mask_axis, 0, n - 2)
-                m_centre = active_mask.narrow(mask_axis, 1, n - 2)
-                m_right = active_mask.narrow(mask_axis, 2, n - 2)
+            if union_mask is not None:
+                mask_axis = tensor_axis - 1
+                n = union_mask.shape[mask_axis]
+                m_left = union_mask.narrow(mask_axis, 0, n - 2)
+                m_centre = union_mask.narrow(mask_axis, 1, n - 2)
+                m_right = union_mask.narrow(mask_axis, 2, n - 2)
                 deriv_mask = m_left & m_centre & m_right
 
             total = total + self._compute_single_loss(

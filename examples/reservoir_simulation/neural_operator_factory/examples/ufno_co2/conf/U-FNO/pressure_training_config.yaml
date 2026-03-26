@@ -38,7 +38,7 @@ data:
   input_file: null
   output_file: null
   normalize: false
-  num_workers: 4
+  num_workers: 1
   val_metric: mre
   mask_enabled: true
   mask_channel: 0
@@ -84,4 +84,4 @@ compute:
   num_gpus: 8
   distributed: true
   benchmark: true
-  deterministic: trur
+  deterministic: true
