@@ -17,6 +17,13 @@
 # =============================================================================
 # Model Architecture Configuration
 # =============================================================================
+# This config is used with training_config.yaml (Norne 4D TNO by default).
+# For examples with self-contained configs, see examples/ufno_co2/.
+#
+# The loss section requires input channels to follow the NOF convention:
+#   3d: last 3 channels = [grid_x, grid_y, grid_t]
+#   4d: last 4 channels = [grid_x, grid_y, grid_z, grid_t]
+# See README.md for full dataset requirements.
 
 arch:
   # ---------------------------------------------------------------------------
@@ -52,7 +59,7 @@ arch:
     out_channels: 1
     width: 36
     padding: 8
-    activation_fn: gelu
+    activation_fn: relu
     
     # Fourier modes per dimension
     modes1: 10                # H or X dimension
@@ -159,8 +166,13 @@ arch:
 # =============================================================================
 # Loss Function Configuration
 # =============================================================================
+# When masking is enabled (training_config.yaml -> mask_enabled: true),
+# only active cells contribute to the loss.  For relative_l2, active
+# cells are selected per-sample so norms are not diluted by zeros.
+# Derivative and physics losses use a union mask across the batch.
 loss:
   # Data losses: mse, l1, relative_l2, huber
+  # Multiple types can be combined with weights: [w1, w2, ...]
   types: [relative_l2]
   weights: [1.0]
   reduction: mean

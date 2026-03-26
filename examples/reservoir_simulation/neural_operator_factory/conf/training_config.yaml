@@ -15,6 +15,14 @@
 # limitations under the License.
 
 # Neural Operator Factory — Training Configuration
+#
+# This is the base config for the Norne 4D TNO experiment.
+# For CO2 examples, use the self-contained configs under examples/ufno_co2/.
+#
+# Input channel ordering convention (last channels):
+#   3d: [..., grid_x, grid_y, grid_t]           channels [-3, -2, -1]
+#   4d: [..., grid_x, grid_y, grid_z, grid_t]   channels [-4, -3, -2, -1]
+# Inactive cells must be zero in all input channels and the output.
 
 defaults:
   - model_config
@@ -34,7 +42,7 @@ data:
   # - 3d: expects (N, H, W, T, C) input, (N, H, W, T) output
   # - 4d: expects (N, X, Y, Z, T, C) input, (N, X, Y, Z, T) output
   
-  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne #/lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
+  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne
   
   # Variable name — used for checkpoint naming and metric selection, not file resolution.
   # Choices: 'pressure', 'saturation'
@@ -52,9 +60,14 @@ data:
   input_file: norne_{mode}_a.pt
   output_file: norne_{mode}_swat.pt
 
-  # z-score normalize inputs and outputs.
-  # Recommended: true for pressure (large dynamic range), false for saturation (bounded [0,1]).
+  # z-score normalize inputs and outputs at load time.
+  # Set false if the .pt files are already pre-normalized.
+  # The dataloader computes mean/std from the training set and shares with val/test.
   normalize: false
+
+  # Number of DataLoader worker processes per GPU for parallel data loading.
+  # Higher values speed up I/O-bound training but use more CPU memory.
+  # Recommended: 2-4 per GPU.  Set to 0 for debugging (loads in main process).
   num_workers: 2
 
   # ---------------------------------------------------------------------------
@@ -79,11 +92,6 @@ data:
   #   Example: 5 for Norne ACTNUM, 0 for CO2 permeability.
   mask_channel: null
 
-  # denormalize_fn: Name of a denormalization function to apply to
-  #   predictions and targets before computing validation metrics.
-  #   Choices: 'dnorm_dP' (CO2 pressure), null (no denormalization).
-  #   Default: null (no denormalization — works for any dataset).
-  denormalize_fn: null
 
 training:
   batch_size: 2
@@ -94,8 +102,8 @@ training:
   early_stopping: true
   patience: 20
   use_amp: false
-  use_graphs: true
-  resume_from_checkpoint: ./checkpoints/best_model_saturation_deeponet3d_tno_spatial.pth
+  # Path to a checkpoint to resume training from. null = start fresh.
+  resume_from_checkpoint: null
 
   # ---------------------------------------------------------------------------
   # Training Regime
@@ -177,7 +185,20 @@ seed: 42
 
 compute:
   device: cuda
+
+  # Number of GPUs for distributed training (DDP).
+  # Must match --ntasks-per-node in the SLURM sbatch script.
   num_gpus: 8
+
+  # Enable PyTorch DistributedDataParallel.
+  # Set false for single-GPU debugging.
   distributed: true
-  benchmark: false
-  deterministic: true
+
+  # cudnn.benchmark: auto-tune convolution algorithms for the input
+  # size.  Faster training but non-deterministic.
+  benchmark: true
+
+  # cudnn.deterministic: force deterministic algorithms for exact
+  # reproducibility.  Slower than benchmark.  When true, benchmark
+  # is overridden to false.
+  deterministic: false

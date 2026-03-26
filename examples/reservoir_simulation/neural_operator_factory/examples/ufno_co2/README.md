@@ -95,18 +95,23 @@ CHECKPOINT=checkpoints/best_model_saturation_ufno_custom.pth \
 | Conv-FNO | 0.0078 | 0.0048 | 0.990 |
 | **U-FNO** | **0.0068** | **0.0045** | **0.992** |
 
-### NOF Reproduction (this example)
+### NOF Reproduction (this example, 500 test samples)
 
-#### U-FNO — Test Set (500 samples)
+#### Gas Saturation
 
-| Variable | Metric | **NOF** | **Paper** |
-|----------|--------|---------|-----------|
-| Saturation | MPE | **0.0182** | 0.0161 |
-| | R² | **0.993** | 0.981 |
-| Pressure | MRE | **0.0068** | 0.0068 |
-| | R² | **0.991** | 0.992 |
+| Model | NOF MPE | Paper MPE | NOF R² | Paper R² |
+|-------|---------|-----------|--------|----------|
+| FNO | 0.0303 | 0.0276 | 0.984 | 0.961 |
+| Conv-FNO | 0.0234 | 0.0224 | 0.988 | 0.970 |
+| **U-FNO** | **0.0182** | **0.0161** | **0.993** | **0.981** |
 
-FNO and Conv-FNO results pending.
+#### Pressure Buildup
+
+| Model | NOF MRE | Paper MRE | NOF R² | Paper R² |
+|-------|---------|-----------|--------|----------|
+| FNO | 0.0089 | 0.0082 | 0.976 | 0.989 |
+| Conv-FNO | 0.0087 | 0.0078 | 0.984 | 0.990 |
+| **U-FNO** | **0.0068** | **0.0068** | **0.991** | **0.992** |
 
 ## Loss Function
 

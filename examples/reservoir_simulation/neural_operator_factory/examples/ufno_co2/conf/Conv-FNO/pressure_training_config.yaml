@@ -80,7 +80,7 @@ seed: 42
 
 compute:
   device: cuda
-  num_gpus: 1
-  distributed: false
+  num_gpus: 8
+  distributed: true
   benchmark: true
-  deterministic: false
+  deterministic: true

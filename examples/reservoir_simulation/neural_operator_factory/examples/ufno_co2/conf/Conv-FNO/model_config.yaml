@@ -29,7 +29,7 @@ arch:
     out_channels: 1
     width: 36
     padding: 8
-    activation_fn: gelu
+    activation_fn: relu
 
     modes1: 10
     modes2: 10
@@ -85,7 +85,7 @@ loss:
 
   derivative:
     enabled: true
-    weight: 1.0
+    weight: 0.5
     dims: [dx]
     metric: null
 
