@@ -23,3 +23,4 @@ sbatch examples/ufno_co2/eval.sbatch saturation
 | Example | Description | Dataset | Architectures |
 |---------|-------------|---------|---------------|
 | [ufno_co2](ufno_co2/) | Reproduce U-FNO paper (Wen et al. 2022) | CO2 sequestration (3D) | FNO, Conv-FNO, U-FNO |
+| [udeeponet_co2](udeeponet_co2/) | Reproduce U-DeepONet paper (Diab & Al Kobaisi 2024) | CO2 sequestration (3D) | U-DeepONet |

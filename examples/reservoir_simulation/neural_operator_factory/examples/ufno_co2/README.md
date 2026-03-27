@@ -113,6 +113,14 @@ CHECKPOINT=checkpoints/best_model_saturation_ufno_custom.pth \
 | Conv-FNO | 0.0087 | 0.0078 | 0.984 | 0.990 |
 | **U-FNO** | **0.0068** | **0.0068** | **0.991** | **0.992** |
 
+### Training Time (8× GPU DDP)
+
+| Model | Saturation (100 ep) | Pressure (140 ep) |
+|-------|--------------------|--------------------|
+| FNO | ~39 min | ~54 min |
+| Conv-FNO | ~55 min | ~78 min |
+| U-FNO | ~72 min | ~102 min |
+
 ## Loss Function
 
 Matches the paper's Equation 12: relative L2 loss +
