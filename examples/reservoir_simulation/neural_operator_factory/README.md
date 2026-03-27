@@ -293,7 +293,9 @@ SLURM scripts.  See [examples/README.md](examples/README.md).
 
 | Example | Description | Dataset |
 |---------|-------------|---------|
-| [ufno_co2](examples/ufno_co2/) | U-FNO paper (Wen et al. 2022) | CO2 sequestration |
+| [ufno_co2](examples/ufno_co2/) | U-FNO (Wen et al. 2022) | CO2 |
+| [udeeponet_co2](examples/udeeponet_co2/) | U-DeepONet (Diab & Al Kobaisi 2024) | CO2 |
+| [fourier_mionet_co2](examples/fourier_mionet_co2/) | Fourier-MIONet (Jiang et al. 2024) | CO2 |
 
 ## Testing
 
@@ -311,9 +313,16 @@ and scalar detection.
 1. Wen, G. et al. (2022). "U-FNO — An enhanced Fourier neural
    operator-based deep-learning model for multiphase flow."
    *Advances in Water Resources*, 163, 104180.
-2. Li, Z. et al. (2021). "Fourier Neural Operator for Parametric
+2. Diab, W. & Al Kobaisi, M. (2024). "U-DeepONet: U-Net
+   enhanced deep operator network for geologic carbon
+   sequestration." *Scientific Reports*, 14, 21298.
+3. Jiang, Z. et al. (2024). "Fourier-MIONet: Fourier-enhanced
+   multiple-input neural operators for multiphase modeling of
+   geological carbon sequestration."
+   *Reliability Eng. & System Safety*, 251, 110392.
+4. Li, Z. et al. (2021). "Fourier Neural Operator for Parametric
    Partial Differential Equations." *ICLR 2021*.
-3. Lu, L. et al. (2021). "Learning nonlinear operators via
+5. Lu, L. et al. (2021). "Learning nonlinear operators via
    DeepONet." *Nature Machine Intelligence*, 3, 218-229.
 
 ## License

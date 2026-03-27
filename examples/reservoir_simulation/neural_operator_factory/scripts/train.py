@@ -292,17 +292,22 @@ def main(cfg: DictConfig) -> None:
     if static_mask is not None:
         static_mask = static_mask.to(dist.device)
 
-    # Detect TNO variant
+    # Detect variants with branch2
     regime = cfg.training.get("regime", "full_mapping").lower()
-    is_tno = (
-        cfg.arch.model.lower() == "xdeeponet"
-        and cfg.arch.xdeeponet.get("variant", "") == "tno"
+    _variant = (
+        cfg.arch.xdeeponet.get("variant", "")
+        if cfg.arch.model.lower() == "xdeeponet"
+        else ""
     )
+    is_tno = _variant == "tno"
+    has_branch2 = _variant in ("mionet", "fourier_mionet", "tno")
     if is_tno:
         if regime != "autoregressive":
             raise ValueError("TNO variant requires regime: autoregressive")
         if dist.rank == 0:
             logger.info("TNO mode: branch2 receives previous solution state")
+    elif has_branch2 and dist.rank == 0:
+        logger.info(f"MIONet mode ({_variant}): branch2 processes scalar inputs")
 
     # Print data info (only on rank 0)
     if dist.rank == 0:
@@ -495,6 +500,11 @@ def main(cfg: DictConfig) -> None:
             dummy_target = dummy_batch[1].to(dist.device)
             _L = cfg.training.autoregressive.input_window
             dummy_b2 = dummy_target[..., :_L]
+            _ = model(dummy_input, x_branch2=dummy_b2)
+        elif has_branch2:
+            # MIONet/Fourier-MIONet: branch2 receives scalar inputs.
+            # Pass a dummy tensor so LazyLinear layers materialise.
+            dummy_b2 = dummy_input[:, 0, 0, 0, :]  # (B, C) scalar slice
             _ = model(dummy_input, x_branch2=dummy_b2)
         else:
             _ = model(dummy_input)
@@ -825,16 +835,19 @@ def main(cfg: DictConfig) -> None:
                         )
                 else:
                     # Full-mapping: single forward pass over entire trajectory
+                    fwd_kwargs = {}
+                    if has_branch2 and not is_tno:
+                        fwd_kwargs["x_branch2"] = inputs[:, 0, 0, 0, :]
+
                     if cfg.training.use_amp:
                         with autocast():
-                            pred = model(inputs)
+                            pred = model(inputs, **fwd_kwargs)
                             loss = loss_fn(
                                 pred, targets, inputs, spatial_mask=batch_mask
                             )
                         scaler.scale(loss).backward()
                         scaler.step(optimizer)
                         scaler.update()
-                        # Aggregate and continue (skip the common backward below)
                         if dist.world_size > 1:
                             loss_tensor = loss.detach().clone()
                             torch.distributed.all_reduce(
@@ -845,7 +858,7 @@ def main(cfg: DictConfig) -> None:
                             total_loss += loss.detach()
                         continue
                     else:
-                        pred = model(inputs)
+                        pred = model(inputs, **fwd_kwargs)
                         loss = loss_fn(pred, targets, inputs, spatial_mask=batch_mask)
 
                 # Backward + step
@@ -924,7 +937,10 @@ def main(cfg: DictConfig) -> None:
                                 feedback_channel=1 if ar_feedback else None,
                             )
                         else:
-                            pred = model(inputs)
+                            val_fwd = {}
+                            if has_branch2 and not is_tno:
+                                val_fwd["x_branch2"] = inputs[:, 0, 0, 0, :]
+                            pred = model(inputs, **val_fwd)
 
                         if cfg.training.use_amp:
                             with autocast():
