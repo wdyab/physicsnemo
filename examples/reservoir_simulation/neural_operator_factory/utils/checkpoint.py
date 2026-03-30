@@ -62,6 +62,10 @@ def build_model_from_config(model_config: dict, device="cpu"):
             decoder_layers=model_config.get("decoder_layers", 2),
             decoder_activation_fn=model_config.get("decoder_activation_fn", "relu"),
         )
+        if model_config.get("decoder_type") == "temporal_projection":
+            K = model_config.get("output_window", 3)
+            model.set_output_window(K)
+
         encoder = model_config.get("branch1_config", {}).get("encoder", "spatial")
         model_arch_name = model_config.get(
             "model_arch_name",

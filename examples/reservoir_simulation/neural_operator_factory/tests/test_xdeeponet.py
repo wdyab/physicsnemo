@@ -328,5 +328,214 @@ class TestDeepONet3DWrapper:
         assert model.count_params() > 0
 
 
+class TestHadamardProduct:
+    """Verify 3-way Hadamard product for multi-branch variants."""
+
+    def test_mionet_uses_multiplication(self):
+        model = DeepONetWrapper(
+            variant="mionet",
+            width=16,
+            branch1_config={
+                "encoder": "spatial",
+                "num_unet_layers": 0,
+                "num_conv_layers": 1,
+                "kernel_size": 3,
+            },
+            branch2_config={"encoder": "mlp", "hidden_width": 16, "num_layers": 2},
+            trunk_config={"hidden_width": 16, "num_layers": 2},
+            decoder_layers=0,
+        )
+        x = torch.randn(2, 16, 24, 4, 6)
+        b2 = torch.randn(2, 6)
+        with torch.no_grad():
+            out = model(x, x_branch2=b2)
+        assert out.shape == (2, 16, 24, 4)
+
+
+class TestTemporalProjection:
+    """Test temporal_projection decoder mode."""
+
+    def test_2d_temporal_projection_output_shape(self):
+        K = 3
+        model = DeepONet(
+            variant="u_deeponet",
+            width=16,
+            branch1_config={
+                "encoder": "spatial",
+                "num_unet_layers": 0,
+                "num_conv_layers": 1,
+                "kernel_size": 3,
+            },
+            trunk_config={"hidden_width": 16, "num_layers": 2},
+            decoder_type="temporal_projection",
+            decoder_layers=1,
+            decoder_width=16,
+        )
+        model.set_output_window(K)
+        x_branch = torch.randn(2, 16, 24, 4)
+        x_time = torch.randn(1, 1)
+        with torch.no_grad():
+            out = model(x_branch, x_time)
+        assert out.shape == (2, 16, 24, K)
+
+    def test_2d_temporal_projection_with_branch2(self):
+        K = 5
+        model = DeepONet(
+            variant="tno",
+            width=16,
+            branch1_config={
+                "encoder": "spatial",
+                "num_unet_layers": 0,
+                "num_conv_layers": 1,
+                "kernel_size": 3,
+            },
+            branch2_config={
+                "encoder": "spatial",
+                "num_unet_layers": 0,
+                "num_conv_layers": 1,
+                "kernel_size": 3,
+            },
+            trunk_config={"hidden_width": 16, "num_layers": 2},
+            decoder_type="temporal_projection",
+            decoder_layers=1,
+            decoder_width=16,
+        )
+        model.set_output_window(K)
+        x_branch = torch.randn(2, 16, 24, 4)
+        x_branch2 = torch.randn(2, 16, 24, 4)
+        x_time = torch.randn(1, 1)
+        with torch.no_grad():
+            out = model(x_branch, x_time, x_branch2=x_branch2)
+        assert out.shape == (2, 16, 24, K)
+
+    def test_3d_temporal_projection(self):
+        K = 4
+        model = DeepONet3D(
+            variant="u_deeponet",
+            width=8,
+            branch1_config={
+                "encoder": "spatial",
+                "num_unet_layers": 0,
+                "num_conv_layers": 1,
+                "kernel_size": 3,
+            },
+            trunk_config={"hidden_width": 8, "num_layers": 2},
+            decoder_type="temporal_projection",
+            decoder_layers=1,
+            decoder_width=8,
+        )
+        model.set_output_window(K)
+        x_branch = torch.randn(2, 8, 8, 8, 4)
+        x_time = torch.randn(1, 1)
+        with torch.no_grad():
+            out = model(x_branch, x_time)
+        assert out.shape == (2, 8, 8, 8, K)
+
+    def test_mlp_decoder_still_works(self):
+        """Existing mlp decoder path is preserved."""
+        model = DeepONet(
+            variant="u_deeponet",
+            width=16,
+            branch1_config={
+                "encoder": "spatial",
+                "num_unet_layers": 0,
+                "num_conv_layers": 1,
+                "kernel_size": 3,
+            },
+            trunk_config={"hidden_width": 16, "num_layers": 2},
+            decoder_type="mlp",
+            decoder_layers=1,
+            decoder_width=16,
+        )
+        x_branch = torch.randn(2, 16, 24, 4)
+        x_time = torch.randn(6, 1)
+        with torch.no_grad():
+            out = model(x_branch, x_time)
+        assert out.shape == (2, 16, 24, 6)
+
+    def test_gradient_flow_temporal_projection(self):
+        K = 3
+        model = DeepONet(
+            variant="tno",
+            width=16,
+            branch1_config={
+                "encoder": "spatial",
+                "num_unet_layers": 0,
+                "num_conv_layers": 1,
+                "kernel_size": 3,
+            },
+            branch2_config={
+                "encoder": "spatial",
+                "num_unet_layers": 0,
+                "num_conv_layers": 1,
+                "kernel_size": 3,
+            },
+            trunk_config={"hidden_width": 16, "num_layers": 2},
+            decoder_type="temporal_projection",
+            decoder_layers=1,
+            decoder_width=16,
+        )
+        model.set_output_window(K)
+        x = torch.randn(2, 16, 24, 4, requires_grad=False)
+        b2 = torch.randn(2, 16, 24, 4, requires_grad=False)
+        t = torch.randn(1, 1)
+        out = model(x, t, x_branch2=b2)
+        loss = out.sum()
+        loss.backward()
+        assert model.temporal_head.weight.grad is not None
+
+
+class TestInternalResolution:
+    """Test adaptive pooling in SpatialBranch."""
+
+    def test_2d_internal_resolution(self):
+        from models.xdeeponet import SpatialBranch
+
+        branch = SpatialBranch(
+            in_channels=4,
+            width=8,
+            num_fourier_layers=0,
+            num_unet_layers=0,
+            num_conv_layers=1,
+            kernel_size=3,
+            internal_resolution=[16, 24],
+        )
+        x = torch.randn(2, 32, 48, 4)
+        out = branch(x)
+        assert out.shape == (2, 32, 48, 8)
+
+    def test_2d_no_internal_resolution(self):
+        from models.xdeeponet import SpatialBranch
+
+        branch = SpatialBranch(
+            in_channels=4,
+            width=8,
+            num_fourier_layers=0,
+            num_unet_layers=0,
+            num_conv_layers=1,
+            kernel_size=3,
+            internal_resolution=None,
+        )
+        x = torch.randn(2, 32, 48, 4)
+        out = branch(x)
+        assert out.shape == (2, 32, 48, 8)
+
+    def test_3d_internal_resolution(self):
+        from models.xdeeponet import SpatialBranch3D
+
+        branch = SpatialBranch3D(
+            in_channels=4,
+            width=8,
+            num_fourier_layers=0,
+            num_unet_layers=0,
+            num_conv_layers=1,
+            kernel_size=3,
+            internal_resolution=[8, 8, 8],
+        )
+        x = torch.randn(2, 16, 16, 16, 4)
+        out = branch(x)
+        assert out.shape == (2, 16, 16, 16, 8)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -92,6 +92,13 @@ data:
   #   Example: 5 for Norne ACTNUM, 0 for CO2 permeability.
   mask_channel: null
 
+  # num_timesteps: Truncate the time axis to the first N timesteps for
+  #   train and val splits.  The test split always keeps ALL timesteps,
+  #   enabling temporal extrapolation evaluation.
+  #   null (default) = use all timesteps in the .pt files.
+  #   Example: 16 for CO2 (train on 1.8 years, test extrapolation to 30 years).
+  num_timesteps: null
+
 
 training:
   batch_size: 2
@@ -119,42 +126,67 @@ training:
     input_window: 1
 
     # K: number of timesteps the model predicts per forward pass.
-    # DeepONet/TNO: any K value works (temporal bundling via trunk queries).
+    # DeepONet/TNO (mlp decoder): K trunk queries per forward pass.
+    # DeepONet/TNO (temporal_projection decoder): single trunk query,
+    #   linear head projects to K outputs (faster, set_output_window(K)).
     # xFNO: requires L + K >= 2 * time_modes for proper spectral resolution.
     output_window: 3
 
-    # Stage 1 -- Teacher Forcing: model always sees ground-truth input.
-    # Teaches the underlying physics from clean signals.
+    # -----------------------------------------------------------------------
+    # Stage 1 -- Teacher Forcing
+    # -----------------------------------------------------------------------
+    # Model always sees ground-truth input.  Teaches the underlying physics
+    # from clean signals.  Loss is computed per-window with gradient
+    # accumulation (memory efficient).
     teacher_forcing_epochs: 5
 
-    # Stage 2 -- Pushforward: short unrolled chains with live gradients.
-    # Gradually increases unroll length (curriculum) to bridge the gap
-    # between teacher forcing and free-running rollout.
-    # Set to 0 to skip this stage and go directly to rollout.
+    # -----------------------------------------------------------------------
+    # Stage 2 -- Pushforward (optional, set to 0 to skip)
+    # -----------------------------------------------------------------------
+    # Short unrolled chains with live gradients (uses live_rollout_step).
+    # Gradually increases chain length via curriculum (1 → max_unroll) to
+    # bridge the gap between teacher forcing and free-running rollout.
     pushforward_epochs: 0
-
-    # Stage 3 -- Rollout: free-running autoregressive sweep (detached feedback).
-    # Each window sees the model's own (detached) predictions,
-    # training the model to self-correct approximation errors.
-    rollout_epochs: 175
 
     # Maximum number of pushforward unroll steps.
     # Curriculum linearly ramps from 1 to this value over pushforward_epochs.
     max_unroll: 5
 
+    # -----------------------------------------------------------------------
+    # Stage 3 -- Rollout
+    # -----------------------------------------------------------------------
+    # Free-running autoregressive sweep where the model receives its own
+    # predictions as input, training it to self-correct approximation errors.
+    rollout_epochs: 175
+
+    # rollout_mode: Controls how gradients are handled during rollout.
+    #
+    #   'detached' (default):
+    #     Per-window gradient accumulation.  Predictions are detached between
+    #     windows, so each window trains independently.  Memory efficient
+    #     (one compute graph at a time).  Good default for most models.
+    #
+    #   'live_gradients':
+    #     Full-trajectory rollout with live gradients through the entire chain.
+    #     Predictions are collected, then a single loss is computed on the
+    #     concatenated trajectory.  Gradients flow from the final loss back
+    #     through all intermediate predictions, providing stronger gradient
+    #     signal for temporal coherence.  More memory intensive.  Matches the
+    #     original TNO paper training procedure.
+    rollout_mode: detached
+
     # Noise standard deviation injected into branch2 / feedback during training.
     # Positive values add Gaussian noise for robustness; 0 disables.
-    # Set to 0.01 to 0.05 during rollout training to regularize model against error accumulation
+    # Set to 0.01 to 0.05 during rollout training to regularize against error accumulation.
     noise_std: 0.0
 
-    # Feedback channel: append previous prediction as an extra input channel in autoregressive training.
-    # With a TNO model, the feedback channel is appended to the main branch (branch1).
-    # Set to false to disable. Set to true to enable with all other models in AR training.
+    # Feedback channel: append previous prediction as an extra input channel.
+    # With TNO, the feedback goes through branch2 (t-branch) automatically.
+    # Set to true to enable for other models in AR training (appends to branch1).
     use_feedback_channel: false
 
-    # Gradient checkpointing: trade compute (speed) for memory during pushforward.
-    # Only applies to pushforward (live-gradient chains need it for memory).
-    # Rollout and teacher forcing do not use it (each window is independent).
+    # Gradient checkpointing: trade compute for memory during pushforward.
+    # Only applies to pushforward stage (live-gradient chains).
     gradient_checkpointing: false
 
     # Factor to reset learning rate at each stage transition.

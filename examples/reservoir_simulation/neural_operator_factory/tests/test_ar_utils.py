@@ -38,7 +38,7 @@ from training.ar_utils import (
     extract_target_times,
     get_training_stage,
     inject_feedback_channel,
-    pushforward_step,
+    live_rollout_step,
     rollout_step,
     slice_input_window,
     slice_target_window,
@@ -609,26 +609,26 @@ class TestTeacherForcing:
 
 
 # ---------------------------------------------------------------------------
-# Tests: pushforward_step
+# Tests: live_rollout_step (pushforward / live-gradient rollout)
 # ---------------------------------------------------------------------------
 
 
-class TestPushforwardStep:
-    """Tests for pushforward_step."""
+class TestLiveRolloutStep:
+    """Tests for live_rollout_step."""
 
     def test_3d(self):
         model = DummyModel3D()
         model.train()
         inputs = torch.randn(2, 4, 6, 16, 5)
         targets = torch.randn(2, 4, 6, 16)
-        loss = pushforward_step(
+        loss = live_rollout_step(
             model,
             inputs,
             targets,
             dummy_loss,
             L=1,
             K=3,
-            unroll_steps=2,
+            max_steps=2,
         )
         assert loss.dim() == 0
 
@@ -637,14 +637,14 @@ class TestPushforwardStep:
         model.train()
         inputs = torch.randn(1, 4, 6, 3, 16, 5)
         targets = torch.randn(1, 4, 6, 3, 16)
-        loss = pushforward_step(
+        loss = live_rollout_step(
             model,
             inputs,
             targets,
             dummy_loss,
             L=1,
             K=3,
-            unroll_steps=2,
+            max_steps=2,
         )
         assert loss.dim() == 0
 
@@ -654,49 +654,49 @@ class TestPushforwardStep:
         model.train()
         inputs = torch.randn(2, 4, 6, 16, 5)
         targets = torch.randn(2, 4, 6, 16)
-        loss = pushforward_step(
+        loss = live_rollout_step(
             model,
             inputs,
             targets,
             dummy_loss,
             L=1,
             K=3,
-            unroll_steps=2,
+            max_steps=2,
             is_tno=True,
         )
         assert loss.dim() == 0
 
     def test_unroll_1(self):
-        """unroll_steps=1 processes one step per group."""
+        """max_steps=1 processes one step per group."""
         model = DummyModel3D()
         model.train()
         inputs = torch.randn(2, 4, 6, 16, 5)
         targets = torch.randn(2, 4, 6, 16)
-        loss = pushforward_step(
+        loss = live_rollout_step(
             model,
             inputs,
             targets,
             dummy_loss,
             L=1,
             K=3,
-            unroll_steps=1,
+            max_steps=1,
         )
         assert loss.dim() == 0
 
     def test_large_unroll(self):
-        """Large unroll_steps covers all windows in a single group."""
+        """Large max_steps covers all windows in a single group."""
         model = DummyModel3D()
         model.train()
         inputs = torch.randn(2, 4, 6, 20, 5)
         targets = torch.randn(2, 4, 6, 20)
-        loss = pushforward_step(
+        loss = live_rollout_step(
             model,
             inputs,
             targets,
             dummy_loss,
             L=1,
             K=3,
-            unroll_steps=100,
+            max_steps=100,
         )
         assert loss.dim() == 0
 
@@ -706,56 +706,38 @@ class TestPushforwardStep:
         model.train()
         inputs = torch.randn(2, 4, 6, 16, 5)
         targets = torch.randn(2, 4, 6, 16)
-        loss = pushforward_step(
+        loss = live_rollout_step(
             model,
             inputs,
             targets,
             dummy_loss,
             L=1,
             K=3,
-            unroll_steps=2,
+            max_steps=2,
             feedback_channel=0,
         )
         assert loss.dim() == 0
 
     def test_gradient_flow(self):
-        """Pushforward returns a live tensor; backward produces nonzero grads."""
+        """live_rollout_step calls backward internally; model params get grads."""
         model = DummyIdentityModel3D()
         model.train()
         inputs = torch.randn(2, 4, 6, 16, 5)
         targets = torch.randn(2, 4, 6, 16)
         model.zero_grad()
-        loss = pushforward_step(
+        loss = live_rollout_step(
             model,
             inputs,
             targets,
             dummy_loss,
             L=1,
             K=3,
-            unroll_steps=3,
-        )
-        assert loss.grad_fn is not None
-        loss.backward()
-        assert model.scale.grad is not None
-        assert model.scale.grad.abs().item() > 0
-
-    def test_checkpointing(self):
-        """Gradient checkpointing does not change output shape."""
-        model = DummyModel3D()
-        model.train()
-        inputs = torch.randn(2, 4, 6, 16, 5)
-        targets = torch.randn(2, 4, 6, 16)
-        loss = pushforward_step(
-            model,
-            inputs,
-            targets,
-            dummy_loss,
-            L=1,
-            K=3,
-            unroll_steps=2,
-            use_checkpointing=True,
+            max_steps=3,
         )
         assert loss.dim() == 0
+        assert not loss.requires_grad
+        assert model.scale.grad is not None
+        assert model.scale.grad.abs().item() > 0
 
 
 # ---------------------------------------------------------------------------
@@ -1030,14 +1012,14 @@ class TestL2K4Configs:
         model.train()
         inputs = torch.randn(2, 4, 6, 20, 5)
         targets = torch.randn(2, 4, 6, 20)
-        loss = pushforward_step(
+        loss = live_rollout_step(
             model,
             inputs,
             targets,
             dummy_loss,
             L=2,
             K=4,
-            unroll_steps=3,
+            max_steps=3,
         )
         assert loss.dim() == 0
 

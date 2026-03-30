@@ -166,8 +166,8 @@ from utils.co2_normalization import dnorm_dP
 from data.validation import validate_batch_dimensions, print_validation_summary
 from training.ar_utils import (
     teacher_forcing_step,
-    pushforward_step,
     rollout_step,
+    live_rollout_step,
     ar_validate_full_rollout,
     get_training_stage,
     compute_unroll_steps,
@@ -209,6 +209,37 @@ _METRIC_REGISTRY = {
     "mpe": ("MPE", "val_mpe", mean_plume_error),
     "relative_l2": ("RelL2", "val_relative_l2", compute_relative_l2_error),
 }
+
+
+def _live_rollout_ddp_safe(
+    model, dist, inputs, targets, loss_fn, ar_common, max_steps=None
+):
+    """Run live_rollout_step with correct DDP gradient synchronization.
+
+    live_rollout_step performs multiple forward passes with a single backward,
+    which conflicts with DDP's per-forward gradient hooks.  This wrapper
+    disables DDP sync during the step, then manually AllReduces gradients
+    so all GPUs apply identical weight updates.
+    """
+    kwargs = (
+        dict(ar_common, max_steps=max_steps)
+        if max_steps is not None
+        else dict(ar_common)
+    )
+
+    if isinstance(model, DDP):
+        with model.no_sync():
+            loss = live_rollout_step(model, inputs, targets, loss_fn, **kwargs)
+        for param in model.parameters():
+            if param.grad is not None:
+                torch.distributed.all_reduce(
+                    param.grad, op=torch.distributed.ReduceOp.SUM
+                )
+                param.grad /= dist.world_size
+    else:
+        loss = live_rollout_step(model, inputs, targets, loss_fn, **kwargs)
+
+    return loss
 
 
 @hydra.main(version_base="1.3", config_path="../conf", config_name="training_config")
@@ -282,6 +313,7 @@ def main(cfg: DictConfig) -> None:
         expected_dimensions=expected_dimensions,
         use_mask=cfg.data.get("mask_enabled", False),
         mask_channel=cfg.data.get("mask_channel", None),
+        num_timesteps=cfg.data.get("num_timesteps", None),
     )
 
     # Masking metadata from dataset
@@ -488,6 +520,17 @@ def main(cfg: DictConfig) -> None:
 
     else:
         raise ValueError(f"Unknown model: {model_type}. Use 'xfno' or 'xdeeponet'.")
+
+    # Set temporal projection output window before any forward pass
+    if (
+        regime == "autoregressive"
+        and hasattr(model, "_temporal_projection")
+        and model._temporal_projection
+    ):
+        ar_K_init = cfg.training.autoregressive.output_window
+        model.set_output_window(ar_K_init)
+        if dist.rank == 0:
+            logger.info(f"Temporal projection decoder: output window K={ar_K_init}")
 
     # Initialize lazy modules with a dummy forward pass (required for DDP)
     # This is needed because nn.LazyLinear doesn't know its input size until first forward
@@ -738,6 +781,7 @@ def main(cfg: DictConfig) -> None:
             "max_unroll", ar_cfg.get("pushforward_max_unroll", 5)
         )
         ar_lr_reset = ar_cfg.get("lr_reset_factor", 1.0)
+        ar_rollout_mode = ar_cfg.get("rollout_mode", "detached").lower()
 
         if dist.rank == 0:
             logger.info("=" * 80)
@@ -747,7 +791,9 @@ def main(cfg: DictConfig) -> None:
                 logger.info(
                     f"  Stage 2 — Pushforward:      {pf_epochs} epochs (unroll 1 -> {ar_max_unroll})"
                 )
-            logger.info(f"  Stage 3 — Rollout:          {ro_epochs} epochs")
+            logger.info(
+                f"  Stage 3 — Rollout:          {ro_epochs} epochs ({ar_rollout_mode})"
+            )
             logger.info(f"  Total: {total_epochs} epochs")
             if ar_noise_std > 0:
                 logger.info(f"  Noise: std={ar_noise_std}")
@@ -816,23 +862,33 @@ def main(cfg: DictConfig) -> None:
                             pf_epochs,
                             ar_max_unroll,
                         )
-                        loss = pushforward_step(
+                        loss = _live_rollout_ddp_safe(
                             model,
+                            dist,
                             inputs,
                             targets,
                             loss_fn,
-                            unroll_steps=unroll,
-                            use_checkpointing=ar_checkpointing,
-                            **ar_common,
+                            ar_common,
+                            max_steps=unroll,
                         )
                     else:
-                        loss = rollout_step(
-                            model,
-                            inputs,
-                            targets,
-                            loss_fn,
-                            **ar_common,
-                        )
+                        if ar_rollout_mode == "live_gradients":
+                            loss = _live_rollout_ddp_safe(
+                                model,
+                                dist,
+                                inputs,
+                                targets,
+                                loss_fn,
+                                ar_common,
+                            )
+                        else:
+                            loss = rollout_step(
+                                model,
+                                inputs,
+                                targets,
+                                loss_fn,
+                                **ar_common,
+                            )
                 else:
                     # Full-mapping: single forward pass over entire trajectory
                     fwd_kwargs = {}
@@ -863,7 +919,8 @@ def main(cfg: DictConfig) -> None:
 
                 # Backward + step
                 if regime == "autoregressive":
-                    # AR functions already called backward() internally (gradient accumulation)
+                    # All AR step functions call backward() internally
+                    # and return detached scalars for logging.
                     optimizer.step()
                 else:
                     loss.backward()
@@ -1131,6 +1188,13 @@ def main(cfg: DictConfig) -> None:
                             ]:
                                 model_config["branch2_config"] = dict(
                                     xdeeponet_cfg.branch2
+                                )
+                            if (
+                                xdeeponet_cfg.get("decoder_type", "mlp")
+                                == "temporal_projection"
+                            ):
+                                model_config["output_window"] = (
+                                    cfg.training.autoregressive.output_window
                                 )
 
                         save_checkpoint(

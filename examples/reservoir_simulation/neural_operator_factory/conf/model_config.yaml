@@ -129,6 +129,10 @@ arch:
       dropout: 0.0
       unet_impl: physicsnemo       # 'custom' or 'physicsnemo'
       activation_fn: tanh
+      # Adaptive pool inputs to this resolution before processing,
+      # then upsample back.  Decouples model size from grid size.
+      # null = use native input resolution.  Set to [H, W] (3d) or [X, Y, Z] (4d).
+      internal_resolution: null
     
     # Branch 2: Secondary encoder (for mionet/fourier_mionet/tno)
     # Supports same options as branch1. Use mlp for scalar inputs, spatial for fields.
@@ -148,16 +152,31 @@ arch:
       dropout: 0.0
       unet_impl: physicsnemo
       activation_fn: tanh
+      # internal_resolution: null  # same as branch1
     
     # Trunk: Temporal/coordinate encoder
     trunk:
       input_type: time        # 'time' (t only) or 'grid' (x,y,t for 3d / x,y,z,t for 4d)
       hidden_width: 128
       num_layers: 8
-      activation_fn: tanh
+      activation_fn: tanh     # activation for hidden layers (sin, tanh, relu, gelu, etc.)
+      # output_activation: whether to apply activation_fn to the trunk's output layer.
+      #   true  (default) = activated output; used by DeepONet, U-DeepONet, MIONet.
+      #   false = linear output; used by TNO — avoids squashing the Hadamard
+      #           product's dynamic range, allowing the trunk to produce
+      #           arbitrary magnitudes.
+      output_activation: true
     
     # Decoder: Output projection
-    decoder_type: mlp         # 'mlp' or 'conv'
+    # 'mlp':  per-timestep trunk query → MLP → 1.  Standard DeepONet decoding.
+    #   The trunk is queried at each target timestep separately.
+    # 'conv': per-timestep trunk query → conv decoder → 1.
+    # 'temporal_projection': single trunk query → Hadamard product → MLP →
+    #   linear head (width → K timesteps).  The trunk is queried once and a
+    #   learned linear projection produces all K output timesteps directly.
+    #   Faster inference for autoregressive bundling.  Requires
+    #   set_output_window(K) at runtime (handled automatically by train.py).
+    decoder_type: mlp
     decoder_width: 128
     decoder_layers: 2
     decoder_activation_fn: relu  

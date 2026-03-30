@@ -123,7 +123,7 @@ class UNet2D(nn.Module):
                 bias=False,
             ),
             nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.LeakyReLU(0.1),
             nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity(),
         )
 
@@ -133,7 +133,7 @@ class UNet2D(nn.Module):
             nn.ConvTranspose2d(
                 in_channels, out_channels, kernel_size=4, stride=2, padding=1
             ),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.LeakyReLU(0.1),
         )
 
     def _output_block(
@@ -291,7 +291,7 @@ class UNet3D(nn.Module):
                 bias=False,
             ),
             nn.BatchNorm3d(out_channels),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.LeakyReLU(0.1),
             nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity(),
         )
 
@@ -301,7 +301,7 @@ class UNet3D(nn.Module):
             nn.ConvTranspose3d(
                 in_channels, out_channels, kernel_size=4, stride=2, padding=1
             ),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.LeakyReLU(0.1),
         )
 
     def _output_block(
@@ -370,4 +370,3 @@ class UNet3D(nn.Module):
     def count_params(self) -> int:
         """Count total number of trainable parameters."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
-

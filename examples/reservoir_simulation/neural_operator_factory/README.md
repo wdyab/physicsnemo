@@ -25,7 +25,7 @@ losses, and autoregressive temporal rollout.
   configuration.
 - **Multi-GPU DDP**: distributed training with SLURM batch scripts
   out of the box.
-- **366 unit tests**: comprehensive test coverage for models,
+- **375 unit tests**: comprehensive test coverage for models,
   losses, metrics, padding, autoregressive utilities, and
   checkpointing.
 
@@ -65,9 +65,12 @@ neural_operator_factory/
 │   └── training_config.yaml       # Training hyperparameters
 │
 ├── examples/                      # Reproducible experiments
-│   └── ufno_co2/                  # U-FNO paper reproduction
+│   ├── ufno_co2/                  # U-FNO paper reproduction
+│   ├── udeeponet_co2/             # U-DeepONet paper reproduction
+│   ├── fourier_mionet_co2/        # Fourier-MIONet paper reproduction
+│   └── tno_co2/                   # TNO paper reproduction
 │
-├── tests/                         # Unit tests (366 tests)
+├── tests/                         # Unit tests (375 tests)
 ├── train.sbatch                   # SLURM training script
 ├── eval_norne.sbatch              # SLURM Norne evaluation
 ├── requirements.txt
@@ -179,6 +182,21 @@ the model's own previous output as feedback.
 Branch networks support configurable combinations of Fourier,
 U-Net, and Conv layers.  The trunk network is a sinusoidal
 MLP encoding time or full spatiotemporal coordinates.
+
+**Advanced features:**
+
+- **3-way Hadamard product**: multi-branch variants (`mionet`,
+  `fourier_mionet`, `tno`) combine outputs as
+  `branch1 * branch2 * trunk` (element-wise multiplication).
+- **Adaptive spatial pooling** (`internal_resolution`): branch
+  networks can down-sample inputs to a fixed internal resolution
+  for processing, then up-sample back to the original resolution.
+  Decouples model complexity from grid size.
+- **Temporal projection decoder** (`decoder_type: temporal_projection`):
+  the trunk is queried once and a linear head projects the
+  combined representation to K output timesteps directly,
+  instead of querying the trunk at each target time separately.
+  Enable with `set_output_window(K)` at runtime.
 
 ### U-Net Baselines (`models/unet.py`, `models/physicsnemo_unet.py`)
 
@@ -296,6 +314,7 @@ SLURM scripts.  See [examples/README.md](examples/README.md).
 | [ufno_co2](examples/ufno_co2/) | U-FNO (Wen et al. 2022) | CO2 |
 | [udeeponet_co2](examples/udeeponet_co2/) | U-DeepONet (Diab & Al Kobaisi 2024) | CO2 |
 | [fourier_mionet_co2](examples/fourier_mionet_co2/) | Fourier-MIONet (Jiang et al. 2024) | CO2 |
+| [tno_co2](examples/tno_co2/) | TNO (Diab & Al Kobaisi 2025) | CO2 |
 
 ## Testing
 
@@ -304,7 +323,7 @@ cd examples/reservoir_simulation/neural_operator_factory
 pytest tests/ -v
 ```
 
-366 tests covering models, losses, metrics, padding,
+375 tests covering models, losses, metrics, padding,
 autoregressive utilities, checkpointing, data validation,
 and scalar detection.
 
@@ -320,9 +339,12 @@ and scalar detection.
    multiple-input neural operators for multiphase modeling of
    geological carbon sequestration."
    *Reliability Eng. & System Safety*, 251, 110392.
-4. Li, Z. et al. (2021). "Fourier Neural Operator for Parametric
+4. Diab, W. & Al Kobaisi, M. (2025). "Temporal neural operator
+   for modeling time-dependent physical phenomena."
+   *Scientific Reports*, 15.
+5. Li, Z. et al. (2021). "Fourier Neural Operator for Parametric
    Partial Differential Equations." *ICLR 2021*.
-5. Lu, L. et al. (2021). "Learning nonlinear operators via
+6. Lu, L. et al. (2021). "Learning nonlinear operators via
    DeepONet." *Nature Machine Intelligence*, 3, 218-229.
 
 ## License

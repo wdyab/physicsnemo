@@ -18,10 +18,11 @@
 # U-DeepONet — Model Configuration (CO2 Sequestration)
 # =============================================================================
 # U-Net enhanced DeepONet: 3 U-Net blocks in the branch, sinusoidal
-# trunk for time encoding.  No Fourier layers.
+# trunk for time encoding.  No Fourier layers.  Full-mapping regime
+# (predict entire trajectory in a single forward pass).
 #
-# Width differs per variable: 64 for saturation (default here),
-# 96 for pressure (overridden in pressure_training_config.yaml).
+# Default width p=64 (saturation).
+# Pressure overrides to p=96 in pressure_training_config.yaml.
 #
 # Reference: Diab & Al Kobaisi (2024), Sci. Rep. 14, 21298.
 #            https://doi.org/10.1038/s41598-024-72393-0
@@ -30,32 +31,6 @@
 arch:
   dimensions: 3d
   model: xdeeponet
-
-  # xfno section required by Hydra schema but not used
-  xfno:
-    out_channels: 1
-    width: 36
-    padding: 8
-    activation_fn: relu
-    modes1: 10
-    modes2: 10
-    modes3: 10
-    modes4: 6
-    num_fno_layers: 4
-    lifting_type: mlp
-    lifting_layers: 1
-    lifting_width: 36
-    decoder_type: mlp
-    decoder_layers: 1
-    decoder_width: 128
-    decoder_activation_fn: relu
-    num_unet_layers: 0
-    num_conv_layers: 0
-    unet_type: custom
-    unet_kernel_size: 3
-    unet_dropout: 0.0
-    conv_kernel_size: 3
-    coord_features: true
 
   xdeeponet:
     variant: u_deeponet
@@ -74,21 +49,25 @@ arch:
       dropout: 0.0
       unet_impl: custom
       activation_fn: sin
+      internal_resolution: null
 
     # Trunk: 10-layer sinusoidal FNN processing time only
+    # output_activation: true (default) — sin applied to output layer.
+    # U-DeepONet uses activated trunk output, unlike TNO which uses linear.
     trunk:
       input_type: time
       hidden_width: 64
       num_layers: 10
       activation_fn: sin
+      output_activation: true
 
-    # Decoder: shallow FC projection
+    # Decoder: shallow MLP projection (per-timestep trunk query → 1)
     decoder_type: mlp
     decoder_width: 64
     decoder_layers: 1
     decoder_activation_fn: relu
 
-# Same loss as U-FNO paper: relative L2 + derivative (dx)
+# Relative L2 loss + spatial derivative regularization (dx)
 loss:
   types: [relative_l2]
   weights: [1.0]

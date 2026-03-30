@@ -433,88 +433,6 @@ def teacher_forcing_step(
 # ---------------------------------------------------------------------------
 
 
-def pushforward_step(
-    model,
-    inputs: Tensor,
-    targets: Tensor,
-    loss_fn,
-    L: int,
-    K: int,
-    unroll_steps: int = 1,
-    use_checkpointing: bool = False,
-    spatial_mask: Optional[Tensor] = None,
-    is_tno: bool = False,
-    noise_std: float = 0.0,
-    feedback_channel: Optional[int] = None,
-    stride: Optional[int] = None,
-) -> Tensor:
-    """Pushforward training step with gradient flow through the unrolled chain.
-
-    Unlike ``rollout_step``, predictions are **not** detached between steps,
-    so gradients flow through the entire sequence.  Returns a *live* tensor
-    (with grad) -- the caller must call ``.backward()``.
-    """
-    effective_stride = stride if stride is not None else K
-    total_T = targets.shape[_time_axis_target(targets)]
-    t_ax = _time_axis_target(targets)
-
-    if total_T <= L:
-        return torch.tensor(0.0, device=inputs.device)
-    max_windows = (total_T - L - K) // effective_stride + 1
-    if max_windows <= 0:
-        return torch.tensor(0.0, device=inputs.device)
-
-    steps = min(unroll_steps, max_windows)
-    accumulated_loss = torch.tensor(0.0, device=inputs.device)
-    prev_pred = None
-    current_t = 0
-
-    for _ in range(steps):
-        target_start = current_t + L
-        remaining = total_T - target_start
-        actual_K = min(K, remaining)
-        if actual_K <= 0:
-            break
-
-        x_window = slice_input_window(inputs, current_t, L)
-        y_target = slice_target_window(targets, target_start, actual_K)
-        target_times = extract_target_times(inputs, target_start, actual_K)
-
-        y_branch2 = _build_branch2(
-            targets,
-            prev_pred,
-            current_t,
-            L,
-            t_ax,
-            is_tno,
-            noise_std,
-        )
-
-        if feedback_channel is not None:
-            fb = _get_feedback(targets, prev_pred, current_t, L, t_ax)
-            fb = add_noise(fb, noise_std)
-            x_window = inject_feedback_channel(x_window, fb)
-
-        pred = _call_model(
-            model,
-            x_window,
-            target_times,
-            use_checkpointing,
-            x_branch2=y_branch2,
-        )
-
-        if pred.shape[t_ax] > actual_K:
-            pred = pred.narrow(t_ax, 0, actual_K)
-
-        window_loss = loss_fn(pred, y_target, x_window, spatial_mask=spatial_mask)
-        accumulated_loss = accumulated_loss + window_loss
-
-        prev_pred = pred
-        current_t += effective_stride
-
-    return accumulated_loss / steps
-
-
 # ---------------------------------------------------------------------------
 # Rollout training step (one batch) -- sequential chain from t=0
 # ---------------------------------------------------------------------------
@@ -604,6 +522,141 @@ def rollout_step(
         current_t += effective_stride
 
     return torch.tensor(accumulated_loss / num_windows, device=inputs.device)
+
+
+# ---------------------------------------------------------------------------
+# Full-trajectory rollout with live gradients (matches original TNO training)
+# ---------------------------------------------------------------------------
+
+
+def _freeze_batchnorm(model):
+    """Set all BatchNorm layers to eval mode (freeze running stats).
+
+    Returns a list of the modules that were switched so they can be
+    restored afterwards.  The learned gamma/beta parameters still
+    receive gradients; only the inplace running-stat updates are
+    suppressed.
+    """
+    switched = []
+    m = model.module if hasattr(model, "module") else model
+    for mod in m.modules():
+        if isinstance(
+            mod, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d)
+        ):
+            if mod.training:
+                mod.eval()
+                switched.append(mod)
+    return switched
+
+
+def _unfreeze_batchnorm(switched):
+    """Restore previously-frozen BatchNorm layers to training mode."""
+    for mod in switched:
+        mod.train()
+
+
+def live_rollout_step(
+    model,
+    inputs: Tensor,
+    targets: Tensor,
+    loss_fn,
+    L: int,
+    K: int,
+    max_steps: Optional[int] = None,
+    spatial_mask: Optional[Tensor] = None,
+    is_tno: bool = False,
+    noise_std: float = 0.0,
+    feedback_channel: Optional[int] = None,
+    stride: Optional[int] = None,
+) -> Tensor:
+    """Rollout with live gradients through an unrolled prediction chain.
+
+    Collects predictions into a single tensor, computes loss once on the
+    concatenated trajectory, then calls ``.backward()``.  Returns a
+    detached scalar loss for logging.  The caller should NOT call
+    ``loss.backward()`` -- only ``optimizer.step()``.
+
+    Gradients flow from the final loss through all intermediate
+    predictions, providing strong gradient signal for learning to handle
+    error accumulation.
+
+    BatchNorm layers are temporarily set to eval mode during the forward
+    chain to prevent inplace running-stat updates from invalidating the
+    autograd graph.  The learned affine parameters (gamma, beta) still
+    receive gradients normally.
+
+    Parameters
+    ----------
+    max_steps : int or None
+        Maximum number of autoregressive windows to chain.  ``None``
+        (default) chains all windows in the trajectory.  Set to a small
+        value (e.g. 1-5) for pushforward-style curriculum training.
+    """
+    total_T = targets.shape[_time_axis_target(targets)]
+    t_ax = _time_axis_target(targets)
+
+    if total_T <= L:
+        return torch.tensor(0.0, device=inputs.device)
+
+    # Freeze BatchNorm running stats to avoid inplace buffer updates
+    # that would invalidate the live autograd graph across chained forwards.
+    frozen_bn = _freeze_batchnorm(model)
+
+    pred_slices = []
+    prev_pred = None
+    current_t = 0
+    step_count = 0
+
+    while current_t + L < total_T:
+        target_start = current_t + L
+        remaining = total_T - target_start
+        actual_K = min(K, remaining)
+        if actual_K <= 0:
+            break
+
+        x_window = slice_input_window(inputs, current_t, L)
+        target_times = extract_target_times(inputs, target_start, actual_K)
+
+        y_branch2 = _build_branch2(
+            targets,
+            prev_pred,
+            current_t,
+            L,
+            t_ax,
+            is_tno,
+            noise_std,
+        )
+
+        if feedback_channel is not None:
+            fb = _get_feedback(targets, prev_pred, current_t, L, t_ax)
+            fb = add_noise(fb, noise_std)
+            x_window = inject_feedback_channel(x_window, fb)
+
+        pred = _call_model(model, x_window, target_times, x_branch2=y_branch2)
+
+        if pred.shape[t_ax] > actual_K:
+            pred = pred.narrow(t_ax, 0, actual_K)
+
+        pred_slices.append(pred)
+        prev_pred = pred
+        current_t += stride if stride is not None else K
+        step_count += 1
+        if max_steps is not None and step_count >= max_steps:
+            break
+
+    if not pred_slices:
+        _unfreeze_batchnorm(frozen_bn)
+        return torch.tensor(0.0, device=inputs.device)
+
+    pred_full = torch.cat(pred_slices, dim=t_ax)
+    target_full = slice_target_window(targets, L, pred_full.shape[t_ax])
+
+    loss = loss_fn(pred_full, target_full, inputs, spatial_mask=spatial_mask)
+    if loss.requires_grad:
+        loss.backward()
+
+    _unfreeze_batchnorm(frozen_bn)
+    return loss.detach()
 
 
 # ---------------------------------------------------------------------------

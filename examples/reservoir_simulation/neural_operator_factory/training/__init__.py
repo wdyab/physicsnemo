@@ -21,6 +21,7 @@ Training utilities: loss functions, evaluation metrics, and autoregressive helpe
 from training.ar_utils import (
     teacher_forcing_step,
     rollout_step,
+    live_rollout_step,
     ar_validate_full_rollout,
     slice_input_window,
     slice_target_window,
@@ -58,6 +59,7 @@ __all__ = [
     # Autoregressive
     "teacher_forcing_step",
     "rollout_step",
+    "live_rollout_step",
     "ar_validate_full_rollout",
     "slice_input_window",
     "slice_target_window",

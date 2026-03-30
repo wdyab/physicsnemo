@@ -42,7 +42,7 @@ data:
   val_metric: mre
   mask_enabled: true
   mask_channel: 0
-  denormalize_fn: dnorm_dP
+  denormalize_fn: null
 
 training:
   batch_size: 4

@@ -14,12 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# =============================================================================
-# FNO — Pressure Buildup (CO2 Sequestration)
-# =============================================================================
-# Expected test-set results (paper Table I.14b):
-#   MRE = 0.0082 ± 0.0052,  R² = 0.989
-# =============================================================================
+# TNO — Pressure Buildup (CO2), width p=128
+# Original code: width=128 (paper Appendix F states p=160, code uses 128)
 
 defaults:
   - model_config
@@ -29,7 +25,15 @@ hydra:
   job:
     chdir: False
   run:
-    dir: ./outputs/ufno_co2/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ./outputs/tno_co2/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+# Override width from 96 to 128 for pressure
+arch:
+  xdeeponet:
+    width: 128
+    branch2:
+      hidden_width: 128
+    decoder_width: 128
 
 data:
   data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
@@ -42,19 +46,31 @@ data:
   mask_enabled: true
   mask_channel: 0
   denormalize_fn: null
+  num_timesteps: 16
 
 training:
   batch_size: 4
-  epochs: 140
-  initial_lr: 0.001
+  initial_lr: 0.0006
   checkpoint_dir: ./checkpoints
   validate_freq: 5
-  early_stopping: true
+  early_stopping: false
   patience: 25
   use_amp: false
-  use_graphs: true
   resume_from_checkpoint: null
-  regime: full_mapping
+  regime: autoregressive
+
+  autoregressive:
+    input_window: 1
+    output_window: 3
+    teacher_forcing_epochs: 90
+    pushforward_epochs: 0
+    rollout_epochs: 40
+    max_unroll: 5
+    noise_std: 0.0
+    use_feedback_channel: false
+    gradient_checkpointing: false
+    lr_reset_factor: 1.0
+    rollout_mode: live_gradients
 
 optimizer:
   type: adam
@@ -64,16 +80,16 @@ optimizer:
 
 scheduler:
   type: step
-  step_size: 10
-  gamma: 0.85
+  step_size: 2
+  gamma: 0.92
   min_lr: 1.0e-6
 
 logging:
   console_freq: 10
-  use_tensorboard: true
+  use_tensorboard: false
   tensorboard_dir: ./tensorboard
   use_mlflow: false
-  experiment_name: ufno_co2_fno_pressure
+  experiment_name: tno_co2_pressure
   use_wandb: false
 
 seed: 42
@@ -83,4 +99,4 @@ compute:
   num_gpus: 8
   distributed: true
   benchmark: true
-  deterministic: true
+  deterministic: false

@@ -111,6 +111,7 @@ class ReservoirDataset(Dataset):
         expected_dimensions: Optional[str] = None,
         use_mask: bool = False,
         mask_channel: Optional[int] = None,
+        num_timesteps: Optional[int] = None,
     ):
         super().__init__()
 
@@ -123,6 +124,7 @@ class ReservoirDataset(Dataset):
         )
         self.use_mask = use_mask
         self._config_mask_channel = mask_channel
+        self._num_timesteps = num_timesteps
 
         if self.mode not in ["train", "val", "test"]:
             raise ValueError(f"Mode must be 'train', 'val', or 'test', got {mode}")
@@ -134,6 +136,13 @@ class ReservoirDataset(Dataset):
 
         # Load data
         self._load_data()
+
+        # Truncate time axis if requested
+        if self._num_timesteps is not None:
+            T = self._num_timesteps
+            self.input_data = self.input_data[..., :T, :]
+            self.output_data = self.output_data[..., :T]
+            _log_message(f"  Truncated to {T} timesteps")
 
         # Detect dimensions and set metadata
         self._detect_dimensions()
@@ -547,6 +556,7 @@ def create_dataloaders(
     expected_dimensions: Optional[str] = None,
     use_mask: bool = False,
     mask_channel: Optional[int] = None,
+    num_timesteps: Optional[int] = None,
 ) -> Tuple[torch.utils.data.DataLoader, ...]:
     """
     Create train, validation, and test dataloaders.
@@ -623,9 +633,13 @@ def create_dataloaders(
         "mask_channel": mask_channel,
     }
 
-    # Create datasets
-    train_dataset = ReservoirDataset(mode="train", **dataset_kwargs)
-    val_dataset = ReservoirDataset(mode="val", **dataset_kwargs)
+    # Create datasets (num_timesteps truncates train/val only; test keeps full trajectory)
+    train_dataset = ReservoirDataset(
+        mode="train", num_timesteps=num_timesteps, **dataset_kwargs
+    )
+    val_dataset = ReservoirDataset(
+        mode="val", num_timesteps=num_timesteps, **dataset_kwargs
+    )
     test_dataset = ReservoirDataset(mode="test", **dataset_kwargs)
 
     # Share normalization from training set
