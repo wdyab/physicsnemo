@@ -26,31 +26,6 @@ arch:
   dimensions: 3d
   model: xdeeponet
 
-  xfno:
-    out_channels: 1
-    width: 36
-    padding: 8
-    activation_fn: relu
-    modes1: 10
-    modes2: 10
-    modes3: 10
-    modes4: 6
-    num_fno_layers: 4
-    lifting_type: mlp
-    lifting_layers: 1
-    lifting_width: 36
-    decoder_type: mlp
-    decoder_layers: 1
-    decoder_width: 128
-    decoder_activation_fn: relu
-    num_unet_layers: 0
-    num_conv_layers: 0
-    unet_type: custom
-    unet_kernel_size: 3
-    unet_dropout: 0.0
-    conv_kernel_size: 3
-    coord_features: true
-
   xdeeponet:
     variant: mionet
     width: 36
@@ -67,6 +42,7 @@ arch:
       dropout: 0.0
       unet_impl: custom
       activation_fn: relu
+      internal_resolution: null
 
     branch2:
       encoder: mlp
@@ -79,6 +55,7 @@ arch:
       hidden_width: 36
       num_layers: 6
       activation_fn: sin
+      output_activation: true
 
     decoder_type: mlp
     decoder_width: 128
