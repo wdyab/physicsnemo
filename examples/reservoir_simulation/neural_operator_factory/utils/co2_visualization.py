@@ -22,8 +22,8 @@ CO2 sequestration dataset (2D cross-section visualizations with
 CO2-specific grid spacing and labels).
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def setup_plotting_grid():

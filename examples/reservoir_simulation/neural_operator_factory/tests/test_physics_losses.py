@@ -21,22 +21,19 @@ from pathlib import Path
 
 import pytest
 import torch
-import math
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from training.losses import UnifiedLoss, get_loss_function
 from training.physics_losses import (
     MassConservationLoss,
-    compute_cell_volumes_from_widths,
+    _extract_grid_widths,
+    build_physics_losses,
     cell_centre_distance,
     central_difference,
-    get_deriv_map,
+    compute_cell_volumes_from_widths,
     extract_grid_widths_for_axis,
-    build_physics_losses,
-    _extract_grid_widths,
 )
-from training.losses import UnifiedLoss, get_loss_function
-
 
 # ===================================================================
 # Dummy Reservoir Fixtures
@@ -221,7 +218,7 @@ class TestCentralDifference:
 
     def test_non_uniform_spacing(self):
         """Known values with non-uniform grid."""
-        B, H, W, T = 1, 1, 6, 1
+        _B, _H, _W, _T = 1, 1, 6, 1
         # f = [0, 1, 3, 6, 10, 15]
         field = torch.tensor([0.0, 1.0, 3.0, 6.0, 10.0, 15.0]).view(1, 1, 6, 1)
         widths = DX_2D  # [10, 20, 30, 15, 25, 10]

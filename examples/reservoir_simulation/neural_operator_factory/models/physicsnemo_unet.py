@@ -25,14 +25,12 @@ PhysicsNemo's UNet is natively 3D, so the 2D wrapper adds/removes a dummy
 temporal dimension to enable 2D processing.
 """
 
-import torch
-import torch.nn as nn
-from torch import Tensor
 from typing import List, Optional
 
-from physicsnemo.models.unet import UNet as PhysicsNemoUNet
-from models.unet import UNet3D
+import torch.nn as nn
+from torch import Tensor
 
+from physicsnemo.models.unet import UNet as PhysicsNemoUNet
 
 # ==============================================================================
 # PhysicsNemo UNet Wrappers (2D and 3D)
@@ -41,13 +39,13 @@ from models.unet import UNet3D
 
 class PhysicsNemoUNet2D(nn.Module):
     """Wrapper to use PhysicsNemo's 3D UNet for 2D spatial data.
-    
+
     This wrapper adds a dummy temporal dimension (T=1) to use PhysicsNemo's
     3D UNet architecture for 2D spatial processing (H × W).
-    
+
     Use this for models that process spatial slices independently,
     such as DeepONet's branch network.
-    
+
     Parameters
     ----------
     in_channels : int
@@ -62,14 +60,14 @@ class PhysicsNemoUNet2D(nn.Module):
         Number of channels at each depth level
     **kwargs
         Additional arguments passed to PhysicsNemo's UNet
-    
+
     Example
     -------
     >>> unet = PhysicsNemoUNet2D(in_channels=64, out_channels=64)
     >>> x = torch.randn(4, 64, 104, 200)  # (B, C, H, W)
     >>> y = unet(x)  # (B, 64, H, W)
     """
-    
+
     def __init__(
         self,
         in_channels: int,
@@ -80,10 +78,10 @@ class PhysicsNemoUNet2D(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        
+
         if feature_map_channels is None:
             feature_map_channels = [in_channels] * model_depth
-        
+
         self.unet = PhysicsNemoUNet(
             in_channels=in_channels,
             out_channels=out_channels,
@@ -93,7 +91,9 @@ class PhysicsNemoUNet2D(nn.Module):
             feature_map_channels=feature_map_channels,
             num_conv_blocks=kwargs.get("num_conv_blocks", 1),
             conv_activation=kwargs.get("conv_activation", "leaky_relu"),
-            conv_transpose_activation=kwargs.get("conv_transpose_activation", "leaky_relu"),
+            conv_transpose_activation=kwargs.get(
+                "conv_transpose_activation", "leaky_relu"
+            ),
             padding=kwargs.get("padding", kernel_size // 2),
             padding_mode=kwargs.get("padding_mode", "zeros"),
             pooling_type=kwargs.get("pooling_type", "MaxPool3d"),
@@ -103,15 +103,15 @@ class PhysicsNemoUNet2D(nn.Module):
             use_attn_gate=kwargs.get("use_attn_gate", False),
             gradient_checkpointing=kwargs.get("gradient_checkpointing", False),
         )
-    
+
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass.
-        
+
         Parameters
         ----------
         x : Tensor
             Input of shape (B, C, H, W)
-        
+
         Returns
         -------
         Tensor
@@ -119,25 +119,25 @@ class PhysicsNemoUNet2D(nn.Module):
         """
         # Add dummy temporal dimension: (B, C, H, W) -> (B, C, H, W, 1)
         x = x.unsqueeze(-1)
-        
+
         # Forward through 3D UNet
         x = self.unet(x)
-        
+
         # Remove temporal dimension: (B, C, H, W, 1) -> (B, C, H, W)
         x = x.squeeze(-1)
-        
+
         return x
 
 
 class PhysicsNemoUNet3D(nn.Module):
     """Wrapper for PhysicsNemo's 3D UNet for spatiotemporal data.
-    
+
     This is a thin wrapper around PhysicsNemo's native 3D UNet for
     processing spatiotemporal data (H × W × T).
-    
+
     Use this for models that process full spatiotemporal volumes,
     such as U-FNO or standalone U-Net models.
-    
+
     Parameters
     ----------
     in_channels : int
@@ -152,14 +152,14 @@ class PhysicsNemoUNet3D(nn.Module):
         Number of channels at each depth level
     **kwargs
         Additional arguments passed to PhysicsNemo's UNet
-    
+
     Example
     -------
     >>> unet = PhysicsNemoUNet3D(in_channels=12, out_channels=1)
     >>> x = torch.randn(4, 12, 104, 200, 24)  # (B, C, H, W, T)
     >>> y = unet(x)  # (B, 1, H, W, T)
     """
-    
+
     def __init__(
         self,
         in_channels: int,
@@ -170,10 +170,10 @@ class PhysicsNemoUNet3D(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        
+
         if feature_map_channels is None:
             feature_map_channels = [in_channels] * model_depth
-        
+
         self.unet = PhysicsNemoUNet(
             in_channels=in_channels,
             out_channels=out_channels,
@@ -183,7 +183,9 @@ class PhysicsNemoUNet3D(nn.Module):
             feature_map_channels=feature_map_channels,
             num_conv_blocks=kwargs.get("num_conv_blocks", 1),
             conv_activation=kwargs.get("conv_activation", "leaky_relu"),
-            conv_transpose_activation=kwargs.get("conv_transpose_activation", "leaky_relu"),
+            conv_transpose_activation=kwargs.get(
+                "conv_transpose_activation", "leaky_relu"
+            ),
             padding=kwargs.get("padding", kernel_size // 2),
             padding_mode=kwargs.get("padding_mode", "zeros"),
             pooling_type=kwargs.get("pooling_type", "MaxPool3d"),
@@ -193,15 +195,15 @@ class PhysicsNemoUNet3D(nn.Module):
             use_attn_gate=kwargs.get("use_attn_gate", False),
             gradient_checkpointing=kwargs.get("gradient_checkpointing", False),
         )
-    
+
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass.
-        
+
         Parameters
         ----------
         x : Tensor
             Input of shape (B, C, H, W, T)
-        
+
         Returns
         -------
         Tensor

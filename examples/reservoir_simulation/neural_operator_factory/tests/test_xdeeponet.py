@@ -25,14 +25,14 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models.xdeeponet import (
-    TrunkNet,
+    DeepONet,
+    DeepONet3D,
+    DeepONet3DWrapper,
+    DeepONetWrapper,
     MLPBranch,
     SpatialBranch,
     SpatialBranch3D,
-    DeepONet,
-    DeepONetWrapper,
-    DeepONet3D,
-    DeepONet3DWrapper,
+    TrunkNet,
 )
 
 BRANCH1_SPATIAL = {

@@ -23,7 +23,8 @@ Supports both 3D (2D spatial + time) and 4D (3D spatial + time) datasets:
 """
 
 from pathlib import Path
-from typing import Union, Tuple, Optional, Dict, List
+from typing import Dict, Optional, Tuple, Union
+
 import torch
 from torch.utils.data import Dataset
 
@@ -36,7 +37,7 @@ def _log_message(msg: str, rank_zero_only: bool = True):
         dist = DistributedManager()
         if not rank_zero_only or dist.rank == 0:
             print(msg)
-    except:
+    except Exception:
         print(msg)
 
 
@@ -618,7 +619,7 @@ def create_dataloaders(
 
         dist = DistributedManager()
         is_distributed = dist.world_size > 1
-    except:
+    except Exception:
         is_distributed = False
 
     # Common kwargs for dataset creation

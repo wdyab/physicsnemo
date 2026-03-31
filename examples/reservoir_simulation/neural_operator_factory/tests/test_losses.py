@@ -26,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from training.losses import SimpleRelativeL2Loss, UnifiedLoss, get_loss_function
 
-
 # ---------------------------------------------------------------------------
 # Helpers: build inputs with grid-width channels (NOF convention)
 # ---------------------------------------------------------------------------
@@ -390,8 +389,8 @@ class TestDerivativeWithMask:
             derivative_config={"enabled": True, "weight": 0.5, "dims": ["dx"]},
         )
         loss = fn(pred, target, inputs, spatial_mask=mask)
-        assert not torch.isnan(loss), f"Loss is NaN with sparse mask"
-        assert not torch.isinf(loss), f"Loss is Inf with sparse mask"
+        assert not torch.isnan(loss), "Loss is NaN with sparse mask"
+        assert not torch.isinf(loss), "Loss is Inf with sparse mask"
 
     def test_derivative_all_dims_with_mask(self):
         """All 3D derivative directions work with masking."""

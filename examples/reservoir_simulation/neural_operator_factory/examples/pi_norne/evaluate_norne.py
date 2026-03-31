@@ -48,16 +48,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import argparse
-import torch
-import numpy as np
 
+import numpy as np
+import torch
 from data.dataloader import ReservoirDataset
+from training.ar_utils import ar_validate_full_rollout
 from training.metrics import (
-    mean_absolute_error,
     compute_r2_score,
     compute_relative_l2_error,
 )
-from training.ar_utils import ar_validate_full_rollout
 from utils.checkpoint import build_model_from_config
 
 

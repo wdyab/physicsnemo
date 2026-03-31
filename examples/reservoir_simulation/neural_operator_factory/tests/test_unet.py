@@ -101,7 +101,7 @@ class TestUNet2D:
         # Training mode - dropout active
         model.train()
         output1 = model(x)
-        output2 = model(x)
+        _output2 = model(x)
 
         # With dropout, outputs should differ (with high probability)
         # Note: This is a probabilistic test

@@ -57,7 +57,9 @@ def compute_right_pad_to_multiple(
     pads = []
     for d in spatial_shape:
         if d <= 0:
-            raise ValueError(f"spatial dimensions must be positive, got {spatial_shape}")
+            raise ValueError(
+                f"spatial dimensions must be positive, got {spatial_shape}"
+            )
         to_mult = (multiple - (d % multiple)) % multiple
         # Guarantee:
         # - (d + pad) is divisible by `multiple`
@@ -182,7 +184,9 @@ def pad_spatial_right(
     b = x.shape[0]
     spatial_shape = x.shape[1 : 1 + spatial_ndim]
     rest_shape = x.shape[1 + spatial_ndim :]
-    rest_prod = 1 if len(rest_shape) == 0 else int(torch.tensor(rest_shape).prod().item())
+    rest_prod = (
+        1 if len(rest_shape) == 0 else int(torch.tensor(rest_shape).prod().item())
+    )
 
     # (B, *spatial, *rest) -> (B, rest_prod, *spatial)
     x_reshaped = x.reshape(b, *spatial_shape, rest_prod).permute(
@@ -205,4 +209,3 @@ def pad_spatial_right(
     return x_padded.permute(0, *range(2, 2 + spatial_ndim), 1).reshape(
         b, *padded_spatial, *rest_shape
     )
-

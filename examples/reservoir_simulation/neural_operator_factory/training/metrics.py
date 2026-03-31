@@ -21,24 +21,25 @@ This module provides standard metrics for evaluating pressure and saturation pre
 Imports available metrics from PhysicsNemo and provides additional domain-specific metrics.
 """
 
-from typing import Optional, Union
+from typing import Optional
 
 import numpy as np
 import torch
 from torch import Tensor
 
+from physicsnemo.metrics.general.ensemble_metrics import Mean, Variance
+
 # ============================================================================
 # PhysicsNemo Imports (official implementations)
 # ============================================================================
 from physicsnemo.metrics.general.mse import mse, rmse
-from physicsnemo.metrics.general.ensemble_metrics import Mean, Variance
 from physicsnemo.metrics.general.reduction import WeightedMean, WeightedVariance
 
 # Re-export PhysicsNemo metrics for convenience
 __all__ = [
     # PhysicsNemo imports
     "mse",
-    "rmse", 
+    "rmse",
     "Mean",
     "Variance",
     "WeightedMean",
@@ -68,6 +69,7 @@ __all__ = [
 # ============================================================================
 # NumPy-based Metrics (for evaluation/post-processing)
 # ============================================================================
+
 
 def mean_relative_error(
     y_pred: np.ndarray,
@@ -229,14 +231,16 @@ def normalized_mse(
         float: Normalized MSE value
     """
     mse_val = np.mean((y_pred - y_true) ** 2)
-    
+
     if normalize_by == "variance":
         normalizer = np.var(y_true) + eps
     elif normalize_by == "range":
         normalizer = (y_true.max() - y_true.min()) ** 2 + eps
     else:
-        raise ValueError(f"normalize_by must be 'variance' or 'range', got {normalize_by}")
-    
+        raise ValueError(
+            f"normalize_by must be 'variance' or 'range', got {normalize_by}"
+        )
+
     return float(mse_val / normalizer)
 
 
@@ -260,17 +264,18 @@ def peak_signal_to_noise_ratio(
     """
     if data_range is None:
         data_range = y_true.max() - y_true.min()
-    
+
     mse_val = np.mean((y_pred - y_true) ** 2)
     if mse_val < eps:
         return float("inf")
-    
+
     return float(20 * np.log10(data_range / (np.sqrt(mse_val) + eps)))
 
 
 # ============================================================================
 # PyTorch-based Metrics (for use during training)
 # ============================================================================
+
 
 def mse_torch(pred: Tensor, target: Tensor, dim: Optional[int] = None) -> Tensor:
     """
@@ -345,7 +350,7 @@ def relative_l2_torch(
     else:
         diff_norm = torch.norm(pred - target, p=2, dim=dim)
         target_norm = torch.norm(target, p=2, dim=dim)
-    
+
     return diff_norm / (target_norm + eps)
 
 
@@ -375,7 +380,7 @@ def relative_l1_torch(
     else:
         diff_norm = torch.norm(pred - target, p=1, dim=dim)
         target_norm = torch.norm(target, p=1, dim=dim)
-    
+
     return diff_norm / (target_norm + eps)
 
 
@@ -392,10 +397,10 @@ def r2_score_torch(pred: Tensor, target: Tensor) -> Tensor:
     """
     ss_res = torch.sum((target - pred) ** 2)
     ss_tot = torch.sum((target - target.mean()) ** 2)
-    
+
     if ss_tot == 0:
         return torch.tensor(1.0 if ss_res == 0 else 0.0, device=pred.device)
-    
+
     return 1 - (ss_res / ss_tot)
 
 
@@ -433,10 +438,10 @@ def psnr_torch(
     """
     if data_range is None:
         data_range = target.max() - target.min()
-    
+
     mse_val = torch.mean((pred - target) ** 2)
-    
+
     if mse_val < eps:
         return torch.tensor(float("inf"), device=pred.device)
-    
+
     return 20 * torch.log10(data_range / (torch.sqrt(mse_val) + eps))

@@ -19,7 +19,6 @@
 import sys
 from pathlib import Path
 
-import pytest
 import torch
 import torch.nn as nn
 
@@ -44,7 +43,6 @@ from training.ar_utils import (
     slice_target_window,
     teacher_forcing_step,
 )
-
 
 # ---------------------------------------------------------------------------
 # Dummy models
@@ -1123,7 +1121,9 @@ class TestFeedbackNoise:
         inputs = torch.randn(B, H, W, T, C)
         targets = torch.randn(B, H, W, T)
         model = self._make_model(C + 1)
-        loss_fn = lambda p, t, i, spatial_mask=None: (p - t).pow(2).mean()
+
+        def loss_fn(p, t, i, spatial_mask=None):
+            return (p - t).pow(2).mean()
 
         torch.manual_seed(0)
         loss1 = rollout_step(
@@ -1186,7 +1186,9 @@ class TestFeedbackNoise:
         inputs = torch.randn(B, H, W, T, C)
         targets = torch.randn(B, H, W, T)
         model = self._make_model(C + 1)
-        loss_fn = lambda p, t, i, spatial_mask=None: (p - t).pow(2).mean()
+
+        def loss_fn(p, t, i, spatial_mask=None):
+            return (p - t).pow(2).mean()
 
         torch.manual_seed(42)
         loss1 = teacher_forcing_step(

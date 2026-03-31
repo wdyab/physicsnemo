@@ -33,12 +33,11 @@ import torch.nn.functional as F
 
 from training.physics_losses import (
     build_physics_losses,
-    get_deriv_map,
     cell_centre_distance,
     central_difference,
     extract_grid_widths_for_axis,
+    get_deriv_map,
 )
-
 
 # ---------------------------------------------------------------------------
 # Standalone convenience loss
@@ -370,7 +369,7 @@ class UnifiedLoss(nn.Module):
             data_loss = data_loss + self._deriv_weight * deriv_loss
 
         # 3. Physics losses
-        for _name, (mod, weight) in self._physics_losses.items():
+        for mod, weight in self._physics_losses.values():
             phys = mod(pred, target, inputs, spatial_mask=spatial_mask)
             data_loss = data_loss + weight * phys
 

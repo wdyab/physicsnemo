@@ -44,7 +44,8 @@ neural_operator_factory/
 │   ├── validation.py              # Shape validation, dim detection
 │   └── scalar_utils.py           # MIONet scalar channel detection
 │
-├── training/                      # Training utilities
+├── training/                      # Training pipeline and utilities
+│   ├── train.py                   # Training entry point (DDP, AMP, Hydra)
 │   ├── losses.py                  # UnifiedLoss (data + derivative)
 │   ├── physics_losses.py          # Mass conservation loss
 │   ├── ar_utils.py                # Autoregressive training helpers
@@ -55,9 +56,6 @@ neural_operator_factory/
 │   ├── padding.py                 # Dimension-agnostic padding
 │   ├── co2_normalization.py       # CO2-specific denormalization
 │   └── co2_visualization.py       # CO2-specific plotting
-│
-├── training/                      # Training utilities and entry point
-│   ├── train.py                   # Training (DDP, AMP, Hydra)
 │
 ├── conf/                          # Base Hydra configuration
 │   ├── model_config.yaml          # Architecture and loss settings

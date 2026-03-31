@@ -28,17 +28,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-import torch
-import numpy as np
 import matplotlib
+import numpy as np
+import torch
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import argparse
 
+import matplotlib.pyplot as plt
 from data.dataloader import ReservoirDataset
+from data.validation import print_validation_summary, validate_sample_dimensions
 from utils.checkpoint import build_model_from_config
-from data.validation import validate_sample_dimensions, print_validation_summary
 
 
 def dnorm_dP(dP):

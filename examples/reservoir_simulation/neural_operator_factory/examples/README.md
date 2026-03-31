@@ -2,7 +2,7 @@
 
 Each subdirectory is a self-contained example with its own Hydra config files
 and SLURM batch scripts. All examples use the shared training script at
-`training/train.py` and the shared evaluation scripts at `scripts/`.
+`training/train.py` and per-example evaluation scripts.
 
 ## Running an Example
 

@@ -23,22 +23,21 @@ from pathlib import Path
 # Add parent directory (neural_operator_factory/) to path for package imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import hydra
-from omegaconf import DictConfig
 from pathlib import Path
-import torch
-from torch.optim import Adam
-from torch.optim.lr_scheduler import StepLR, ExponentialLR
-from torch.cuda.amp import autocast, GradScaler
-from torch.nn.parallel import DistributedDataParallel as DDP
-import numpy as np
+
+import hydra
 import mlflow
 import mlflow.pytorch
-
-from models.xfno import UFNONet, FNO4DNet
-from models.physicsnemo_unet import StandaloneUNet
-from models.xdeeponet import DeepONetWrapper, DeepONet3DWrapper
-from utils.checkpoint import build_model_from_config, save_checkpoint, load_checkpoint
+import numpy as np
+import torch
+from models.xdeeponet import DeepONet3DWrapper, DeepONetWrapper
+from models.xfno import FNO4DNet, UFNONet
+from omegaconf import DictConfig
+from torch.cuda.amp import GradScaler, autocast
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim import Adam
+from torch.optim.lr_scheduler import ExponentialLR, StepLR
+from utils.checkpoint import load_checkpoint, save_checkpoint
 
 
 def print_model_architecture(model, model_type: str, dimensions: str, cfg, logger):
@@ -64,9 +63,9 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
 
         # Branch configuration
         branch1_cfg = cfg.arch.xdeeponet.get("branch1", {})
-        logger.info(f"Branch 1:")
+        logger.info("Branch 1:")
         logger.info(f"  Type: {branch1_cfg.get('encoder', 'spatial')}")
-        logger.info(f"  In Channels: auto (inferred from input tensor)")
+        logger.info("  In Channels: auto (inferred from input tensor)")
         logger.info(f"  Fourier Layers: {branch1_cfg.get('num_fourier_layers', 0)}")
         logger.info(f"  UNet Layers: {branch1_cfg.get('num_unet_layers', 0)}")
         logger.info(f"  Conv Layers: {branch1_cfg.get('num_conv_layers', 0)}")
@@ -74,9 +73,9 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
 
         if variant in ["mionet", "fourier_mionet"]:
             branch2_cfg = cfg.arch.xdeeponet.get("branch2", {})
-            logger.info(f"Branch 2:")
+            logger.info("Branch 2:")
             logger.info(f"  Type: {branch2_cfg.get('encoder', 'mlp')}")
-            logger.info(f"  In Features: auto (inferred from input)")
+            logger.info("  In Features: auto (inferred from input)")
             logger.info(f"  Activation: {branch2_cfg.get('activation_fn', 'relu')}")
 
         # Trunk configuration
@@ -84,7 +83,7 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
         trunk_input = trunk_cfg.get("input_type", "time")
         in_features = (4 if dimensions == "4d" else 3) if trunk_input == "grid" else 1
         coord_desc = "x,y,z,t" if dimensions == "4d" else "x,y,t"
-        logger.info(f"Trunk:")
+        logger.info("Trunk:")
         logger.info(
             f"  Input Type: {trunk_input} ({coord_desc if trunk_input == 'grid' else 'just t'})"
         )
@@ -94,7 +93,7 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
         logger.info(f"  Activation: {trunk_cfg.get('activation_fn', 'sin')}")
 
         # Decoder configuration
-        logger.info(f"Decoder:")
+        logger.info("Decoder:")
         logger.info(f"  Type: {cfg.arch.xdeeponet.get('decoder_type', 'mlp')}")
         logger.info(f"  Width: {cfg.arch.xdeeponet.get('decoder_width', 128)}")
         logger.info(f"  Layers: {cfg.arch.xdeeponet.get('decoder_layers', 2)}")
@@ -151,26 +150,29 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
     logger.info("=" * 80)
 
 
-from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import PythonLogger, LaunchLogger
-
-from data.dataloader import create_dataloaders
-from training.losses import get_loss_function, UnifiedLoss
-from training.metrics import (
-    mean_relative_error,
-    mean_plume_error,
-    mean_absolute_error,
-    compute_relative_l2_error,
+from data.dataloader import create_dataloaders  # noqa: E402
+from data.validation import (  # noqa: E402
+    print_validation_summary,
+    validate_batch_dimensions,
 )
-from utils.co2_normalization import dnorm_dP
-from data.validation import validate_batch_dimensions, print_validation_summary
-from training.ar_utils import (
-    teacher_forcing_step,
-    rollout_step,
-    live_rollout_step,
+from utils.co2_normalization import dnorm_dP  # noqa: E402
+
+from physicsnemo.distributed import DistributedManager  # noqa: E402
+from physicsnemo.launch.logging import LaunchLogger, PythonLogger  # noqa: E402
+from training.ar_utils import (  # noqa: E402
     ar_validate_full_rollout,
-    get_training_stage,
     compute_unroll_steps,
+    get_training_stage,
+    live_rollout_step,
+    rollout_step,
+    teacher_forcing_step,
+)
+from training.losses import get_loss_function  # noqa: E402
+from training.metrics import (  # noqa: E402
+    compute_relative_l2_error,
+    mean_absolute_error,
+    mean_plume_error,
+    mean_relative_error,
 )
 
 # Registry of denormalization functions that can be selected via config.
@@ -256,6 +258,7 @@ def main(cfg: DictConfig) -> None:
     # Set random seeds for reproducibility
     if hasattr(cfg, "seed"):
         import random
+
         import numpy as np
 
         seed = cfg.seed + dist.rank  # Different seed per rank for data augmentation
@@ -718,13 +721,7 @@ def main(cfg: DictConfig) -> None:
             _resume_ckpt = load_checkpoint(checkpoint_path, device=dist.device)
 
             # Validate that the checkpoint architecture matches the current model
-            ckpt_cfg = _resume_ckpt.get("model_config", {})
-            ckpt_params = sum(
-                p.numel()
-                for p in (
-                    model.module if isinstance(model, DDP) else model
-                ).parameters()
-            )
+            _resume_ckpt.get("model_config", {})
 
             model_to_load = model.module if isinstance(model, DDP) else model
             model_to_load.load_state_dict(_resume_ckpt["model_state_dict"])
@@ -774,7 +771,6 @@ def main(cfg: DictConfig) -> None:
         pf_epochs = ar_cfg.get("pushforward_epochs", 0)
         ro_epochs = ar_cfg.get("rollout_epochs", 0)
         total_epochs = tf_epochs + pf_epochs + ro_epochs
-        ar_checkpointing = ar_cfg.get("gradient_checkpointing", False)
         ar_noise_std = ar_cfg.get("noise_std", 0.0)
         ar_feedback = ar_cfg.get("use_feedback_channel", False)
         ar_max_unroll = ar_cfg.get(
@@ -798,7 +794,7 @@ def main(cfg: DictConfig) -> None:
             if ar_noise_std > 0:
                 logger.info(f"  Noise: std={ar_noise_std}")
             if ar_feedback:
-                logger.info(f"  Feedback channel: enabled")
+                logger.info("  Feedback channel: enabled")
             if not is_tno and not ar_feedback:
                 logger.warning(
                     "Autoregressive training without TNO or feedback channel: "
@@ -1111,11 +1107,6 @@ def main(cfg: DictConfig) -> None:
                             checkpoint_dir
                             / f"best_model_{cfg.data.variable}_{model_arch_name}.pth"
                         )
-                        # For DDP models, save the underlying module's state_dict
-                        model_to_save = (
-                            model.module if isinstance(model, DDP) else model
-                        )
-
                         # Prepare model config to save with checkpoint
                         model_config = {
                             "dimensions": dimensions,

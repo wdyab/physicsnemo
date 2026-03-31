@@ -23,23 +23,23 @@ Available models:
 - U-Net: UNet2D, UNet3D, PhysicsNemoUNet2D, PhysicsNemoUNet3D, StandaloneUNet
 """
 
-from models.xfno import UFNO, UFNONet, FNO4D, FNO4DNet
-from models.xdeeponet import (
-    TrunkNet,
-    MLPBranch,
-    SpatialBranch,
-    SpatialBranch3D,
-    DeepONet,
-    DeepONet3D,
-    DeepONetWrapper,
-    DeepONet3DWrapper,
-)
-from models.unet import UNet2D, UNet3D
 from models.physicsnemo_unet import (
     PhysicsNemoUNet2D,
     PhysicsNemoUNet3D,
     StandaloneUNet,
 )
+from models.unet import UNet2D, UNet3D
+from models.xdeeponet import (
+    DeepONet,
+    DeepONet3D,
+    DeepONet3DWrapper,
+    DeepONetWrapper,
+    MLPBranch,
+    SpatialBranch,
+    SpatialBranch3D,
+    TrunkNet,
+)
+from models.xfno import FNO4D, UFNO, FNO4DNet, UFNONet
 
 __all__ = [
     # FNO

@@ -16,14 +16,9 @@
 
 """Checkpoint utilities: model reconstruction and save/load helpers."""
 
-from pathlib import Path
-from typing import Optional
-
 import torch
-from torch import Tensor
-
-from models.xfno import UFNONet, FNO4DNet
-from models.xdeeponet import DeepONetWrapper, DeepONet3DWrapper
+from models.xdeeponet import DeepONet3DWrapper, DeepONetWrapper
+from models.xfno import FNO4DNet, UFNONet
 
 
 def build_model_from_config(model_config: dict, device="cpu"):

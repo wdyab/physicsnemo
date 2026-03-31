@@ -25,27 +25,25 @@ Reference:
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
-
-from physicsnemo.models.module import Module
-from physicsnemo.models.layers import (
-    SpectralConv3d,
-    SpectralConv4d,
-    ConvNdKernel1Layer,
-    ConvNdFCLayer,
-    get_activation,
-    Conv3dFCLayer,
-)
-from physicsnemo.models.mlp import FullyConnected
-
-from models.unet import UNet3D
-from models.physicsnemo_unet import PhysicsNemoUNet3D, StandaloneUNet
 from utils.padding import (
     compute_right_pad_to_multiple,
     compute_right_pad_to_multiple_per_dim,
     pad_spatial_right,
 )
+
+from models.physicsnemo_unet import PhysicsNemoUNet3D
+from models.unet import UNet3D
+from physicsnemo.models.layers import (
+    Conv3dFCLayer,
+    ConvNdFCLayer,
+    ConvNdKernel1Layer,
+    SpectralConv3d,
+    SpectralConv4d,
+    get_activation,
+)
+from physicsnemo.models.mlp import FullyConnected
+from physicsnemo.models.module import Module
 
 
 class UFNO(Module):
@@ -145,7 +143,9 @@ class UFNO(Module):
         self.decoder_type = decoder_type.lower()
         self.unet_type = unet_type.lower()
         self.activation_fn_name = activation_fn
-        self.decoder_activation_fn_name = decoder_activation_fn if decoder_activation_fn else activation_fn
+        self.decoder_activation_fn_name = (
+            decoder_activation_fn if decoder_activation_fn else activation_fn
+        )
         self.activation_fn = get_activation(activation_fn)
         self.conv_kernel_size = conv_kernel_size
 
@@ -216,8 +216,12 @@ class UFNO(Module):
 
         # Build decoder network
         self.decoder = self._build_decoder_network(
-            width, out_channels, decoder_layers, decoder_width, decoder_type,
-            self.decoder_activation_fn_name
+            width,
+            out_channels,
+            decoder_layers,
+            decoder_width,
+            decoder_type,
+            self.decoder_activation_fn_name,
         )
 
     def _build_lifting_network(
@@ -266,7 +270,7 @@ class UFNO(Module):
         activation_fn: str,
     ) -> nn.Module:
         """Build decoder network to project latent space to output.
-        
+
         Parameters
         ----------
         width : int
@@ -281,7 +285,7 @@ class UFNO(Module):
             'mlp' for fully connected, 'conv' for 1x1 convolutions
         activation_fn : str
             Activation function name (last layer always linear)
-        
+
         Returns
         -------
         nn.Module
@@ -415,7 +419,9 @@ class UFNONet(nn.Module):
         )
 
     def forward(
-        self, x: Tensor, target_times: Tensor = None,
+        self,
+        x: Tensor,
+        target_times: Tensor = None,
     ) -> Tensor:
         """Forward pass with padding/de-padding.
 
@@ -443,8 +449,10 @@ class UFNONet(nn.Module):
             min_t = max(desired_t, 2 * self.time_modes)
             extra = min_t - t_in
             x = pad_spatial_right(
-                x, spatial_ndim=3,
-                right_pad=(0, 0, extra), mode="replicate",
+                x,
+                spatial_ndim=3,
+                right_pad=(0, 0, extra),
+                mode="replicate",
             )
             t_padded = x.shape[3]
         else:
@@ -461,7 +469,7 @@ class UFNONet(nn.Module):
         x = self.ufno(x)
 
         if K is not None:
-            x = x[:, :h, :w, t_in:t_in + K, :]
+            x = x[:, :h, :w, t_in : t_in + K, :]
         else:
             x = x[:, :h, :w, :t_in, :]
 
@@ -628,7 +636,7 @@ class FNO4D(Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass through FNO4D.
-        
+
         Input: (B, X, Y, Z, T, C)
         Output: (B, X, Y, Z, T, out_channels)
         """
@@ -725,7 +733,9 @@ class FNO4DNet(nn.Module):
         )
 
     def forward(
-        self, x: Tensor, target_times: Tensor = None,
+        self,
+        x: Tensor,
+        target_times: Tensor = None,
     ) -> Tensor:
         """Forward pass with padding/de-padding.
 
@@ -753,8 +763,10 @@ class FNO4DNet(nn.Module):
             min_t = max(desired_t, 2 * self.time_modes)
             extra = min_t - t_in
             x = pad_spatial_right(
-                x, spatial_ndim=4,
-                right_pad=(0, 0, 0, extra), mode="replicate",
+                x,
+                spatial_ndim=4,
+                right_pad=(0, 0, 0, extra),
+                mode="replicate",
             )
             t_padded = x.shape[4]
         else:
@@ -774,7 +786,7 @@ class FNO4DNet(nn.Module):
         x = self.fno4d(x)
 
         if K is not None:
-            x = x[:, :x0, :y0, :z0, t_in:t_in + K, :]
+            x = x[:, :x0, :y0, :z0, t_in : t_in + K, :]
         else:
             x = x[:, :x0, :y0, :z0, :t_in, :]
 

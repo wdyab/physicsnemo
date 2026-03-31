@@ -25,9 +25,9 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data.scalar_utils import (
+    create_mionet_collate_fn,
     detect_scalar_channels,
     verify_scalar_consistency,
-    create_mionet_collate_fn,
 )
 
 

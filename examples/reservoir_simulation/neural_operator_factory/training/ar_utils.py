@@ -60,7 +60,6 @@ import torch
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
-
 # ---------------------------------------------------------------------------
 # Time-axis helpers
 # ---------------------------------------------------------------------------

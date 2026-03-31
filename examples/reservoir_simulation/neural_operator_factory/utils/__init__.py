@@ -19,20 +19,20 @@ Utility functions: padding (generic) and CO2-specific normalization/visualizatio
 """
 
 from utils.co2_normalization import (
+    denormalize_inputs,
     dnorm_dP,
     dnorm_inj,
-    dnorm_temp,
-    dnorm_P,
     dnorm_lam,
+    dnorm_P,
     dnorm_Swi,
+    dnorm_temp,
     extract_reservoir_mask,
-    denormalize_inputs,
 )
 from utils.co2_visualization import (
-    setup_plotting_grid,
-    get_time_labels,
     create_pcolor_func,
+    get_time_labels,
     plot_4x3_comparison,
+    setup_plotting_grid,
 )
 from utils.padding import (
     compute_right_pad_to_multiple,

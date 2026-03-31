@@ -26,23 +26,23 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from training.metrics import (
-    mean_relative_error,
-    mean_plume_error,
-    mean_absolute_error,
-    max_absolute_error,
     compute_r2_score,
-    compute_relative_l2_error,
     compute_relative_l1_error,
+    compute_relative_l2_error,
+    mae_torch,
+    max_absolute_error,
+    max_error_torch,
+    mean_absolute_error,
+    mean_plume_error,
+    mean_relative_error,
+    mse_torch,
     normalized_mse,
     peak_signal_to_noise_ratio,
-    mse_torch,
-    rmse_torch,
-    mae_torch,
-    relative_l2_torch,
-    relative_l1_torch,
-    r2_score_torch,
-    max_error_torch,
     psnr_torch,
+    r2_score_torch,
+    relative_l1_torch,
+    relative_l2_torch,
+    rmse_torch,
 )
 
 

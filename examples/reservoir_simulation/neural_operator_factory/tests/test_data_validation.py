@@ -18,7 +18,7 @@
 
 import sys
 from pathlib import Path
-from io import StringIO
+
 import pytest
 import torch
 
@@ -26,12 +26,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data.validation import (
     detect_dimensions,
+    get_dimension_info,
+    print_validation_summary,
     validate_batch_dimensions,
     validate_sample_dimensions,
-    print_validation_summary,
-    get_dimension_info,
 )
-
 
 # =============================================================================
 # Test Fixtures

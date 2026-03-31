@@ -23,7 +23,6 @@ sequestration dataset. For other datasets, these are not needed.
 
 import numpy as np
 
-
 # ==============================================================================
 # Denormalization Functions
 # ==============================================================================

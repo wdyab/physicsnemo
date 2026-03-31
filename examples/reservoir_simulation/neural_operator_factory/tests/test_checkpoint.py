@@ -24,7 +24,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.checkpoint import build_model_from_config, save_checkpoint, load_checkpoint
+from utils.checkpoint import build_model_from_config, load_checkpoint, save_checkpoint
 
 
 class TestBuildModelFromConfig:

@@ -27,28 +27,26 @@ Supported variants:
     - fourier_mionet: MIONet with Fourier layers
 """
 
+from typing import Any, Dict, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 from torch import Tensor
-from typing import Dict, Any, Optional
+from utils.padding import compute_right_pad_to_multiple, pad_spatial_right
 
-from physicsnemo.models.module import Module
+from models.physicsnemo_unet import PhysicsNemoUNet2D, PhysicsNemoUNet3D
+from models.unet import UNet2D, UNet3D
 from physicsnemo.models.layers import (
-    SpectralConv2d,
-    SpectralConv3d,
     Conv2dFCLayer,
     Conv3dFCLayer,
-    ConvNdKernel1Layer,
+    SpectralConv2d,
+    SpectralConv3d,
     get_activation,
 )
 from physicsnemo.models.mlp import FullyConnected
-
-from models.unet import UNet2D, UNet3D
-from models.physicsnemo_unet import PhysicsNemoUNet2D, PhysicsNemoUNet3D
-from utils.padding import compute_right_pad_to_multiple, pad_spatial_right
-
+from physicsnemo.models.module import Module
 
 # =============================================================================
 # Shared Components
@@ -542,7 +540,7 @@ class DeepONetWrapper(nn.Module):
         self.trunk_input = trunk_config.get("input_type", "time").lower()
 
         if self.trunk_input not in ["time", "grid"]:
-            raise ValueError(f"trunk input_type must be 'time' or 'grid'")
+            raise ValueError("trunk input_type must be 'time' or 'grid'")
 
         if self.trunk_input == "grid":
             trunk_config["in_features"] = 3  # (x, y, t)
@@ -1022,7 +1020,7 @@ class DeepONet3DWrapper(nn.Module):
         self.trunk_input = trunk_config.get("input_type", "time").lower()
 
         if self.trunk_input not in ["time", "grid"]:
-            raise ValueError(f"trunk input_type must be 'time' or 'grid'")
+            raise ValueError("trunk input_type must be 'time' or 'grid'")
 
         if self.trunk_input == "grid":
             trunk_config["in_features"] = 4  # (x, y, z, t)
