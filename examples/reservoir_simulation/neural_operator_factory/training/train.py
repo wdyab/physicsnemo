@@ -1205,8 +1205,6 @@ def main(cfg: DictConfig) -> None:
                             metric_key=metric_key,
                             metric_value=best_val_mre,
                             model_config=model_config,
-                            optimizer=optimizer,
-                            scheduler=scheduler,
                         )
 
                         # Log model to MLFlow

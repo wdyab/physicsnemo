@@ -8,27 +8,19 @@ hydra-core>=1.3.0
 omegaconf>=2.3.0
 
 # PhysicsNeMo - install from source
-# git clone https://github.com/NVIDIA/modulus.git
-# cd modulus && pip install -e .
-# Note: physicsnemo provides DistributedManager, Module, launch utils, and logging
+# git clone https://github.com/NVIDIA/physicsnemo.git
+# cd physicsnemo && pip install -e .
+# Provides: DistributedManager, Module, launch/logging utils,
+#   SpectralConv2d/3d, FullyConnected, and GNN layers.
 
-# Experiment tracking (required for scripts/train.py)
-mlflow>=2.0.0
+# Optional: Experiment tracking (used when logging.use_mlflow: true)
+# mlflow>=2.0.0
 
-# Testing utilities
-loguru>=0.6.0
+# Optional: Evaluation visualization (used by evaluate_*.py scripts)
+# matplotlib>=3.5.0
 
-# Optional: Enhanced visualization
-matplotlib>=3.5.0
-seaborn>=0.12.0
-plotly>=5.0.0
+# Testing
+# pytest>=7.0.0
 
-# Optional: Alternative experiment tracking
-# tensorboard>=2.10.0
-# wandb>=0.13.0
-
-# Optional: For distributed training profiling
-# mpi4py>=3.1.0
-
-# Note: CUDA/cuDNN should be installed separately based on your system
-# This code is tested with CUDA 12.2 and H100 GPUs
+# Note: CUDA/cuDNN should be installed separately based on your system.
+# This code is tested with CUDA 12.2 and H100 GPUs.

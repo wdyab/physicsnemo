@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# =============================================================================
+# PI-Norne — Gas Saturation (SGAS) Model Configuration
+# =============================================================================
+# 4D Temporal Neural Operator for gas saturation prediction on the Norne
+# field.  Uses Fourier + U-Net branch processors on 3D volumetric data
+# (46 x 112 x 22 x 65 timesteps).
+#
+# Gas saturation is a conserved quantity — mass conservation loss is enabled.
+#
+# Norne grid: 46 x 112 x 22, 44,431 active cells (39.2%), 65 timesteps
+# Input channels: 11 (PERMX, PERMZ, PORO, PORV, NTG, ACTNUM, xyz, t, WCID)
+# Output: gas saturation (fraction, [0, 1])
+# =============================================================================
+
+arch:
+  dimensions: 4d
+  model: xdeeponet
+
+  xdeeponet:
+    variant: tno
+    width: 128
+    padding: 8
+
+    # Branch1: processes input fields (11 channels)
+    # Pure Fourier spatial encoder for 3D volumetric data
+    branch1:
+      encoder: spatial
+      num_fourier_layers: 1
+      num_unet_layers: 1
+      num_conv_layers: 0
+      modes1: 8
+      modes2: 8
+      modes3: 6
+      kernel_size: 3
+      dropout: 0.0
+      activation_fn: tanh
+      internal_resolution: null
+
+    # Branch2 (t-branch): processes previous solution state
+    # Pure Fourier spatial encoder for 3D volumetric data
+    branch2:
+      encoder: spatial
+      hidden_width: 128
+      num_layers: 1
+      num_fourier_layers: 1
+      num_unet_layers: 1
+      num_conv_layers: 0
+      modes1: 10
+      modes2: 10
+      modes3: 10
+      kernel_size: 3
+      dropout: 0.0
+      activation_fn: tanh
+      internal_resolution: null
+
+    # Trunk: tanh FNN for time coordinates, linear output (TNO style)
+    trunk:
+      input_type: time
+      hidden_width: 128
+      num_layers: 8
+      activation_fn: tanh
+      output_activation: false
+
+    # Decoder: temporal projection (width → K timesteps)
+    decoder_type: temporal_projection
+    decoder_width: 128
+    decoder_layers: 1
+    decoder_activation_fn: relu
+
+# =============================================================================
+# SGAS Loss Configuration
+# =============================================================================
+# relative_l2 data loss + derivative regularization (dx, dy, dz) +
+# weak mass conservation with cell-volume weighting from grid-width channels.
+loss:
+  types: [relative_l2]
+  weights: [1.0]
+  reduction: mean
+  huber_delta: 1.0
+
+  derivative:
+    enabled: true
+    weight: 0.5
+    dims: [dx, dy, dz]
+    metric: null
+
+  physics:
+    mass_conservation:
+      enabled: true
+      weight: 0.5
+      use_cell_volumes: true
+      metric: null

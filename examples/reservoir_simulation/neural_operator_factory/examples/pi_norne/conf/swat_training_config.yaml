@@ -14,34 +14,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TNO — Gas Saturation (CO2), width p=96
+# PI-Norne — Water Saturation (Norne Field)
 
 defaults:
-  - model_config
+  - swat_model_config
   - _self_
 
 hydra:
   job:
     chdir: False
   run:
-    dir: ./outputs/tno_co2/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ./outputs/pi_norne/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 data:
-  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
-  variable: saturation
-  input_file: null
-  output_file: null
+  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne
+  variable: swat
+  input_file: norne_{mode}_a.pt
+  output_file: norne_{mode}_swat.pt
   normalize: false
-  num_workers: 4
-  val_metric: mpe
-  mask_enabled: false
-  mask_channel: 0
+  num_workers: 2
+  val_metric: rmse
+  mask_enabled: true
+  mask_channel: null
   denormalize_fn: null
-  num_timesteps: 16
+  num_timesteps: null
 
 training:
-  batch_size: 4
-  initial_lr: 0.0006
+  batch_size: 2
+  initial_lr: 0.001
   checkpoint_dir: ./checkpoints
   validate_freq: 5
   use_amp: false
@@ -49,16 +49,16 @@ training:
   regime: autoregressive
 
   autoregressive:
-    input_window: 1
-    output_window: 3
-    teacher_forcing_epochs: 90
+    input_window: 3
+    output_window: 1
+    teacher_forcing_epochs: 5
     pushforward_epochs: 0
-    rollout_epochs: 40
+    rollout_epochs: 175
     max_unroll: 5
     noise_std: 0.0
     use_feedback_channel: false
     lr_reset_factor: 1.0
-    rollout_mode: live_gradients
+    rollout_mode: detached
 
 optimizer:
   weight_decay: 0.0001
@@ -67,12 +67,12 @@ optimizer:
 
 scheduler:
   type: step
-  step_size: 2
-  gamma: 0.92
+  step_size: 10
+  gamma: 0.85
 
 logging:
   use_mlflow: false
-  experiment_name: tno_co2_saturation
+  experiment_name: pi_norne_swat
 
 seed: 42
 

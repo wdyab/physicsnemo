@@ -53,8 +53,6 @@ training:
   initial_lr: 0.0006
   checkpoint_dir: ./checkpoints
   validate_freq: 5
-  early_stopping: false
-  patience: 25
   use_amp: false
   resume_from_checkpoint: null
   regime: autoregressive
@@ -68,12 +66,10 @@ training:
     max_unroll: 5
     noise_std: 0.0
     use_feedback_channel: false
-    gradient_checkpointing: false
     lr_reset_factor: 1.0
     rollout_mode: live_gradients
 
 optimizer:
-  type: adam
   weight_decay: 0.0001
   betas: [0.9, 0.999]
   eps: 1.0e-8
@@ -82,21 +78,13 @@ scheduler:
   type: step
   step_size: 2
   gamma: 0.92
-  min_lr: 1.0e-6
 
 logging:
-  console_freq: 10
-  use_tensorboard: false
-  tensorboard_dir: ./tensorboard
   use_mlflow: false
   experiment_name: tno_co2_pressure
-  use_wandb: false
 
 seed: 42
 
 compute:
-  device: cuda
-  num_gpus: 8
-  distributed: true
   benchmark: true
   deterministic: false

@@ -106,8 +106,6 @@ training:
   initial_lr: 0.001
   checkpoint_dir: ./checkpoints
   validate_freq: 5
-  early_stopping: true
-  patience: 20
   use_amp: false
   # Path to a checkpoint to resume training from. null = start fresh.
   resume_from_checkpoint: null
@@ -185,16 +183,11 @@ training:
     # Set to true to enable for other models in AR training (appends to branch1).
     use_feedback_channel: false
 
-    # Gradient checkpointing: trade compute for memory during pushforward.
-    # Only applies to pushforward stage (live-gradient chains).
-    gradient_checkpointing: false
-
     # Factor to reset learning rate at each stage transition.
     # 1.0 = no reset; < 1.0 = scale LR up relative to current schedule.
     lr_reset_factor: 1.0
 
 optimizer:
-  type: adam
   weight_decay: 0.0001
   betas: [0.9, 0.999]
   eps: 1.0e-8
@@ -203,29 +196,14 @@ scheduler:
   type: step
   step_size: 10
   gamma: 0.85
-  min_lr: 1.0e-6
 
 logging:
-  console_freq: 10
-  use_tensorboard: true
-  tensorboard_dir: ./tensorboard
   use_mlflow: false
   experiment_name: nof_training
-  use_wandb: false
 
 seed: 42
 
 compute:
-  device: cuda
-
-  # Number of GPUs for distributed training (DDP).
-  # Must match --ntasks-per-node in the SLURM sbatch script.
-  num_gpus: 8
-
-  # Enable PyTorch DistributedDataParallel.
-  # Set false for single-GPU debugging.
-  distributed: true
-
   # cudnn.benchmark: auto-tune convolution algorithms for the input
   # size.  Faster training but non-deterministic.
   benchmark: true

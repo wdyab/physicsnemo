@@ -73,6 +73,6 @@ torchrun \
     --nproc_per_node=8 \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29500 \
-    scripts/train.py \
+    training/train.py \
     --config-path "${SLURM_SUBMIT_DIR}/examples/ufno_co2/conf/${ARCH}" \
     --config-name "$CONFIG_NAME"

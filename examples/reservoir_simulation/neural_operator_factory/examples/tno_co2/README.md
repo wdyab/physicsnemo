@@ -38,7 +38,6 @@ the latent space directly to K output timesteps.
 | Scheduler | StepLR(step_size=2, gamma=0.92) |
 | Batch size | 4 per GPU × 8 GPUs |
 | Training timesteps | First 16 of 24 (up to 1.8 years) |
-| Early stopping | Disabled (train full 130 epochs) |
 
 ### Temporal Extrapolation
 

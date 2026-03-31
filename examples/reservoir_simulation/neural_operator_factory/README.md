@@ -56,9 +56,8 @@ neural_operator_factory/
 │   ├── co2_normalization.py       # CO2-specific denormalization
 │   └── co2_visualization.py       # CO2-specific plotting
 │
-├── scripts/                       # Entry points
+├── training/                      # Training utilities and entry point
 │   ├── train.py                   # Training (DDP, AMP, Hydra)
-│   └── evaluate_norne.py          # Norne test-set evaluation
 │
 ├── conf/                          # Base Hydra configuration
 │   ├── model_config.yaml          # Architecture and loss settings
@@ -232,7 +231,7 @@ timesteps from L context timesteps using a three-stage pipeline:
 
 Configurable parameters: `input_window` (L),
 `output_window` (K), noise injection, feedback channel,
-gradient checkpointing, LR reset at stage transitions.
+LR reset at stage transitions.
 
 ### Running Training
 
