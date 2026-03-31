@@ -774,7 +774,7 @@ def main(cfg: DictConfig) -> None:
         pf_epochs = ar_cfg.get("pushforward_epochs", 0)
         ro_epochs = ar_cfg.get("rollout_epochs", 0)
         total_epochs = tf_epochs + pf_epochs + ro_epochs
-        ar_checkpointing = ar_cfg.gradient_checkpointing
+        ar_checkpointing = ar_cfg.get("gradient_checkpointing", False)
         ar_noise_std = ar_cfg.get("noise_std", 0.0)
         ar_feedback = ar_cfg.get("use_feedback_channel", False)
         ar_max_unroll = ar_cfg.get(
