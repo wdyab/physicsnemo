@@ -32,7 +32,7 @@ data:
   input_file: norne_{mode}_a.pt
   output_file: norne_{mode}_pressure.pt
   normalize: true
-  num_workers: 2
+  num_workers: 4
   val_metric: rmse
   mask_enabled: true
   mask_channel: null
@@ -50,15 +50,15 @@ training:
 
   autoregressive:
     input_window: 3
-    output_window: 1
-    teacher_forcing_epochs: 5
-    pushforward_epochs: 0
+    output_window: 2
+    teacher_forcing_epochs: 10
+    pushforward_epochs: 150
     rollout_epochs: 175
     max_unroll: 5
     noise_std: 0.0
     use_feedback_channel: false
     lr_reset_factor: 1.0
-    rollout_mode: detached
+    rollout_mode: live_gradients
 
 optimizer:
   weight_decay: 0.0001

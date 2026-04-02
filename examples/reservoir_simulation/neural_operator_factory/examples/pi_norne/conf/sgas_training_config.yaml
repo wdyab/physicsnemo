@@ -32,7 +32,7 @@ data:
   input_file: norne_{mode}_a.pt
   output_file: norne_{mode}_sgas.pt
   normalize: false
-  num_workers: 2
+  num_workers: 4
   val_metric: rmse
   mask_enabled: true
   mask_channel: null

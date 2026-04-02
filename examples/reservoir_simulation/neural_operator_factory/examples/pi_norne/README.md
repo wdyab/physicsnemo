@@ -25,18 +25,19 @@ Kv/Kh ratio.  All simulations were generated using the open-source
 
 | Component | Configuration |
 |-----------|--------------|
-| Branch1 | Fourier (1 layer) + U-Net (1 layer), tanh, PhysicsNeMo UNet |
-| Branch2 (t-branch) | Fourier (1 layer) + U-Net (1 layer), tanh |
-| Trunk | 8-layer tanh FNN, linear output |
-| Decoder | Temporal projection: MLP + Linear(128 → K=3) |
+| Branch1 | MLP encoder, tanh |
+| Branch2 (t-branch) | MLP encoder, tanh |
+| Trunk | 8-layer tanh FNN, grid input (x,y,z,t), output activation |
+| Decoder | MLP (2 layers, width 128, sigmoid output) |
 | Width | 128 |
+| Parameters | 196,161 |
 | Dimensions | 4D (46 × 112 × 22 × 65 timesteps) |
 
-### Physics-Informed Losses
+### Physics-Informed Losses (Saturation Models)
 
 | Loss | Weight | Description |
 |------|--------|-------------|
-| Relative L2 | 1.0 | Data-fitting loss on active cells only |
+| L1 | 1.0 | Data-fitting loss on active cells only |
 | Derivative (dx, dy, dz) | 0.5 | Spatial gradient regularization in all 3 directions |
 | Mass conservation | 0.5 | Weak mass balance with cell-volume weighting |
 
@@ -45,12 +46,15 @@ Kv/Kh ratio.  All simulations were generated using the open-source
 | Setting | Value |
 |---------|-------|
 | Regime | Autoregressive: 5 TF + 175 rollout epochs |
-| Rollout mode | `live_gradients` |
-| L / K | 1 / 3 |
+| Rollout mode | `detached` |
+| L / K | 3 / 1 |
 | Batch size | 2 per GPU × 8 GPUs |
 | Optimizer | Adam, lr=1e-3, weight_decay=1e-4 |
 | Scheduler | StepLR(step_size=10, gamma=0.85) |
 | Masking | ACTNUM auto-detect (39.2% active cells) |
+
+Note: Pressure model architecture is under active development and
+uses a separate config (`pressure_model_config.yaml`).
 
 ## Dataset
 
@@ -116,7 +120,31 @@ NORMALIZE=1 sbatch examples/pi_norne/eval.sbatch pressure
 
 ## Results
 
-Pending training completion.
+### Water Saturation (SWAT)
+
+| Metric | Value |
+|--------|-------|
+| MAE | 4.38e-3 |
+| RMSE | 1.99e-2 |
+| Relative L2 | 2.65% |
+| R² | 0.9977 |
+| Parameters | 196,161 |
+| Training time | 1 hr 45 min (8× H100, 180 epochs) |
+
+### Gas Saturation (SGAS)
+
+| Metric | Value |
+|--------|-------|
+| MAE | 5.72e-3 |
+| RMSE | 2.88e-2 |
+| Relative L2 | 9.73% |
+| R² | 0.9891 |
+| Parameters | 196,161 |
+| Training time | 1 hr 41 min (8× H100, 180 epochs) |
+
+### Pressure
+
+Under active development — results pending.
 
 ## Files
 

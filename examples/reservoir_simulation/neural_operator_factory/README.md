@@ -1,328 +1,139 @@
-# Neural Operator Factory for Reservoir Simulation
+# Neural Operator Factory
 
-A flexible, config-driven framework for training neural operator
-surrogate models for reservoir simulation, built on
+A config-driven framework for training neural operator surrogates
+for reservoir simulation, built on
 [PhysicsNeMo](https://github.com/NVIDIA/physicsnemo).
-Train FNO, DeepONet, and U-Net architectures on both 2D and 3D
-spatial datasets with a unified training pipeline, physics-informed
-losses, and autoregressive temporal rollout.
+Switch between 165 model architectures, 6 training regimes, and
+physics-informed loss combinations — all from YAML, zero code changes.
 
-## Key Features
+## Why NOF
 
-- **Multiple architectures from one config**: switch between FNO,
-  U-FNO, Conv-FNO, FNO4D, DeepONet (7 variants), TNO, and U-Net
-  baselines by changing a YAML file.
-- **2D and 4D support**: handles `(N, H, W, T, C)` and
-  `(N, X, Y, Z, T, C)` datasets with automatic dimension detection.
-- **Autoregressive training**: three-stage pipeline (teacher
-  forcing, pushforward with curriculum, free-running rollout) for
-  temporal problems.
-- **Physics-informed losses**: spatial derivative regularization
-  and weak mass conservation constraints alongside standard data
-  losses.
-- **Per-sample domain masking**: correctly excludes inactive
-  cells from loss and metrics, with auto-detection or explicit
-  configuration.
-- **Multi-GPU DDP**: distributed training with SLURM batch scripts
-  out of the box.
-- **375 unit tests**: comprehensive test coverage for models,
-  losses, metrics, padding, autoregressive utilities, and
-  checkpointing.
+Pick a model, a training strategy, and a loss function.
+The framework handles everything else: multi-GPU distribution,
+autoregressive rollout, inactive-cell masking, checkpointing,
+and metric tracking.
 
-## Directory Structure
+**165 architectures** from composable building blocks:
+
+| Family | How it works | Count |
+|--------|-------------|-------|
+| **xFNO** | Fourier base +/- UNet +/- Conv | 5 |
+| **DeepONet** | 1 branch (8 types) + trunk | 16 |
+| **MIONet** | 2 branches + trunk | 16 |
+| **TNO** | 2 independent branches + trunk | 128 |
+
+Spatial branches are assembled from **three independent layer types**
+(Fourier, UNet, Conv) that can be freely combined — a Fourier-UNet
+branch, a Conv-only branch, or a triple Fourier-UNet-Conv hybrid
+are all one config change apart.
+
+**6 training regimes**, all model-agnostic:
+
+| Regime | Description |
+|--------|-------------|
+| Full-mapping | Entire trajectory in one forward pass |
+| AR: teacher forcing | Ground-truth input at each window |
+| AR: TF + rollout (detached) | Free-running with per-window gradients |
+| AR: TF + rollout (live) | Full-trajectory backprop through the chain |
+| AR: TF + pushforward + rollout | Curriculum unroll bridging TF and rollout |
+
+**Physics-informed losses** compose on top:
+
+- **Data**: MSE, L1, relative L2, Huber (combinable with weights)
+- **Derivative regularization**: central differences on any
+  spatial axis, using actual cell widths from the grid
+- **Mass conservation**: volume-weighted spatial integration
+  constraint at each timestep
+
+Together this gives **~46,500** unique configurations from YAML alone.
+
+## What You Get for Free
+
+Every configuration — from a basic FNO to a triple-hybrid TNO —
+automatically inherits:
+
+- **Multi-GPU DDP** with proper gradient sync, distributed
+  sampling, and rank-0-only I/O
+- **DDP-safe autoregressive rollout** (`no_sync` + manual
+  AllReduce for multi-forward AR steps)
+- **Automatic mask detection** (ACTNUM, non-zero fallback,
+  per-sample) propagated through all losses and metrics
+- **Dimension-agnostic pipeline** — the same code handles 2D and
+  3D spatial data; losses, AR utilities, and masking adapt
+  automatically
+- **Lazy module initialization** — dummy forward pass materializes
+  all layers before DDP wrapping, with correct branch2 handling
+  for TNO and MIONet
+- **Self-describing checkpoints** — architecture config saved
+  alongside weights for one-line model reconstruction
+- **Optimizer and scheduler resume** — seamless training
+  continuation from any checkpoint
+- **BatchNorm freeze** during live-gradient rollout to prevent
+  autograd graph invalidation
+- **Mixed precision** (AMP) for any model via a single flag (works with selected models)
+- **Configurable validation metrics** (RMSE, MAE, MRE, MPE,
+  relative L2) with automatic per-sample masking
+
+## Quick Start
+
+```bash
+# Train a TNO on Norne (8-GPU DDP via SLURM)
+sbatch examples/pi_norne/train.sbatch pressure_training_config
+
+# Train a U-FNO on CO2 saturation
+sbatch examples/ufno_co2/train.sbatch U-FNO saturation_training_config
+
+# Evaluate
+sbatch examples/tno_co2/eval.sbatch saturation
+```
+
+All commands run from the `neural_operator_factory/` directory.
+
+## Reproduced Papers
+
+Each example ships with configs that reproduce published results:
+
+| Example | Paper | Architecture | Dataset |
+|---------|-------|-------------|---------|
+| [ufno_co2](examples/ufno_co2/) | Wen et al. 2022 | FNO, Conv-FNO, U-FNO | CO2 sequestration |
+| [udeeponet_co2](examples/udeeponet_co2/) | Diab & Al Kobaisi 2024 | U-DeepONet | CO2 sequestration |
+| [fourier_mionet_co2](examples/fourier_mionet_co2/) | Jiang et al. 2024 | MIONet, Fourier-MIONet | CO2 sequestration |
+| [tno_co2](examples/tno_co2/) | Diab & Al Kobaisi 2025 | TNO | CO2 sequestration |
+| [pi_norne](examples/pi_norne/) | — | Physics-informed TNO | Norne field (4D) |
+
+## Dataset Format
+
+Input and output tensors in `.pt` format:
+
+- **2D spatial**: input `(N, H, W, T, C)`, output `(N, H, W, T)`
+- **3D spatial**: input `(N, X, Y, Z, T, C)`, output `(N, X, Y, Z, T)`
+
+The last input channels must follow the NOF grid convention:
+
+| 2D (last 3 channels) | 3D (last 4 channels) | Used by |
+|-----------------------|----------------------|---------|
+| grid\_x (W widths) | grid\_x (X widths) | Derivative loss |
+| grid\_y (H widths) | grid\_y (Y widths) | Derivative loss |
+| — | grid\_z (Z widths) | Derivative loss |
+| grid\_t (time) | grid\_t (time) | DeepONet trunk |
+
+Inactive cells must be zero in all channels.  The framework
+auto-detects binary ACTNUM masks, falls back to non-zero
+pattern detection, and supports per-sample masks when reservoir
+geometry varies across realizations.
+
+## Project Structure
 
 ```text
 neural_operator_factory/
-├── models/                        # Neural operator architectures
-│   ├── xfno.py                    # FNO, U-FNO, Conv-FNO, FNO4D
-│   ├── xdeeponet.py              # DeepONet variants (2D/3D), TNO
-│   ├── unet.py                   # Custom UNet2D, UNet3D
-│   └── physicsnemo_unet.py       # PhysicsNeMo UNet wrappers
-│
-├── data/                          # Data loading and validation
-│   ├── dataloader.py              # ReservoirDataset, dataloaders
-│   ├── validation.py              # Shape validation, dim detection
-│   └── scalar_utils.py           # MIONet scalar channel detection
-│
-├── training/                      # Training pipeline and utilities
-│   ├── train.py                   # Training entry point (DDP, AMP, Hydra)
-│   ├── losses.py                  # UnifiedLoss (data + derivative)
-│   ├── physics_losses.py          # Mass conservation loss
-│   ├── ar_utils.py                # Autoregressive training helpers
-│   └── metrics.py                 # NumPy + PyTorch metrics
-│
-├── utils/                         # Utility functions
-│   ├── checkpoint.py              # Model save/load/reconstruct
-│   ├── padding.py                 # Dimension-agnostic padding
-│   ├── co2_normalization.py       # CO2-specific denormalization
-│   └── co2_visualization.py       # CO2-specific plotting
-│
-├── conf/                          # Base Hydra configuration
-│   ├── model_config.yaml          # Architecture and loss settings
-│   └── training_config.yaml       # Training hyperparameters
-│
-├── examples/                      # Reproducible experiments
-│   ├── ufno_co2/                  # U-FNO paper reproduction
-│   ├── udeeponet_co2/             # U-DeepONet paper reproduction
-│   ├── fourier_mionet_co2/        # Fourier-MIONet paper reproduction
-│   └── tno_co2/                   # TNO paper reproduction
-│
-├── tests/                         # Unit tests (375 tests)
-├── train.sbatch                   # SLURM training script
-├── eval_norne.sbatch              # SLURM Norne evaluation
-├── requirements.txt
-└── README.md
+├── models/              xfno.py, xdeeponet.py, unet.py, physicsnemo_unet.py
+├── data/                dataloader.py, validation.py, scalar_utils.py
+├── training/            train.py, losses.py, physics_losses.py, ar_utils.py, metrics.py
+├── utils/               checkpoint.py, padding.py, co2_normalization.py
+├── conf/                model_config.yaml, training_config.yaml
+├── examples/            ufno_co2/, udeeponet_co2/, fourier_mionet_co2/, tno_co2/, pi_norne/
+└── tests/               375 unit tests
 ```
-
-## Dataset Requirements
-
-The NOF expects input and output tensors in `.pt` format with a
-specific layout.  The **last input channels** must follow a
-fixed convention for derivative losses and DeepONet trunk queries
-to work correctly.
-
-### 2D Spatial Problems (`dimensions: 3d`)
-
-**Input**: `(N, H, W, T, C)` — Output: `(N, H, W, T)`
-
-| Position | Content | Required by |
-|----------|---------|-------------|
-| `0` to `C-4` | Feature channels | All models |
-| `C-3` | **grid_x**: W-direction widths | Derivative (`dx`) |
-| `C-2` | **grid_y**: H-direction widths | Derivative (`dy`) |
-| `C-1` | **grid_t**: time coordinate | DeepONet trunk |
-
-### 3D Spatial Problems (`dimensions: 4d`)
-
-**Input**: `(N, X, Y, Z, T, C)` — Output: `(N, X, Y, Z, T)`
-
-| Channel position | Content | Required by |
-|-----------------|---------|-------------|
-| `0` to `C-5` | Feature channels | All models |
-| `C-4` | **grid_x**: cell widths in X direction | Derivative loss (`dx`) |
-| `C-3` | **grid_y**: cell widths in Y direction | Derivative loss (`dy`) |
-| `C-2` | **grid_z**: cell widths in Z direction | Derivative loss (`dz`) |
-| `C-1` | **grid_t**: time coordinate | DeepONet trunk |
-
-### Masking Convention
-
-Inactive cells (outside the reservoir) must be **zero in all
-input channels and in the output**.  The NOF auto-detects the
-mask channel using this priority:
-
-1. **Explicit config**: `mask_channel: 5` in the training config
-2. **ACTNUM auto-detect**: binary {0,1} channel, static across
-   time, whose zeros coincide with zero-output cells
-3. **Non-zero channel**: any channel with a static zero pattern
-   matching the output's inactive cells
-4. **No mask**: all cells treated as active
-
-When the mask varies across samples (e.g., CO2 dataset with
-variable reservoir thickness), per-sample masks are constructed
-at batch time.  Loss functions select only active cells per
-sample for norm computation.
-
-### File Naming
-
-The dataset loader supports flexible file naming with
-`{mode}` placeholders:
-
-```yaml
-data:
-  data_path: /path/to/data
-  input_file: norne_{mode}_a.pt     # {mode} = train/val/test
-  output_file: norne_{mode}_swat.pt
-```
-
-Or CO2 convention (auto-detected from `variable`):
-
-```yaml
-data:
-  data_path: /path/to/data
-  variable: pressure   # resolves to dP_{mode}_a.pt / dP_{mode}_u.pt
-```
-
-## Model Architectures
-
-### xFNO Family (`models/xfno.py`)
-
-| Model | Layers | Dimensions | Parameters |
-|-------|--------|------------|------------|
-| **FNO** | Fourier only | 3D, 4D | ~31M |
-| **U-FNO** | Fourier + U-Net skip | 3D only | ~33M |
-| **Conv-FNO** | Fourier + Conv3d skip | 3D only | ~31M |
-| **FNO4D** | SpectralConv4d | 4D only | configurable |
-
-Architecture: lifting → [Fourier layers] →
-[U-Fourier / Conv-Fourier layers] → decoder.
-Configurable lifting (MLP/Conv), decoder depth,
-Fourier modes per dimension, and activation function.
-
-### xDeepONet Family (`models/xdeeponet.py`)
-
-| Variant | Description |
-|---------|-------------|
-| `deeponet` | Basic DeepONet (MLP branch) |
-| `u_deeponet` | U-Net enhanced spatial branch |
-| `fourier_deeponet` | Fourier layers in spatial branch |
-| `conv_deeponet` | Convolutional spatial branch |
-| `hybrid_deeponet` | Fourier + U-Net + Conv combination |
-| `mionet` | Multi-input operator network (2 branches) |
-| `fourier_mionet` | MIONet with Fourier layers |
-| `tno` | Temporal Neural Operator (branch2 = previous solution) |
-
-Both 2D (`DeepONetWrapper`) and 3D (`DeepONet3DWrapper`)
-versions are provided.  The **TNO** variant enables
-autoregressive temporal predictions where branch2 receives
-the model's own previous output as feedback.
-
-Branch networks support configurable combinations of Fourier,
-U-Net, and Conv layers.  The trunk network is a sinusoidal
-MLP encoding time or full spatiotemporal coordinates.
-
-**Advanced features:**
-
-- **3-way Hadamard product**: multi-branch variants (`mionet`,
-  `fourier_mionet`, `tno`) combine outputs as
-  `branch1 * branch2 * trunk` (element-wise multiplication).
-- **Adaptive spatial pooling** (`internal_resolution`): branch
-  networks can down-sample inputs to a fixed internal resolution
-  for processing, then up-sample back to the original resolution.
-  Decouples model complexity from grid size.
-- **Temporal projection decoder** (`decoder_type: temporal_projection`):
-  the trunk is queried once and a linear head projects the
-  combined representation to K output timesteps directly,
-  instead of querying the trunk at each target time separately.
-  Enable with `set_output_window(K)` at runtime.
-
-### U-Net Baselines (`models/unet.py`, `models/physicsnemo_unet.py`)
-
-- Custom `UNet2D` / `UNet3D` with 3-level encoder-decoder
-- `PhysicsNemoUNet2D` / `PhysicsNemoUNet3D` wrappers around
-  PhysicsNeMo's native 3D U-Net
-- `StandaloneUNet` for standalone baseline comparison
-
-## Training
-
-### Configuration
-
-All training is driven by two Hydra config files:
-
-- `model_config.yaml`: architecture, loss function, derivative
-  and physics loss settings
-- `training_config.yaml`: data paths, batch size, epochs,
-  optimizer, scheduler, logging, training regime
-
-### Training Regimes
-
-**Full-mapping** (`regime: full_mapping`): predict the entire
-spatiotemporal trajectory in a single forward pass.
-
-**Autoregressive** (`regime: autoregressive`): predict K
-timesteps from L context timesteps using a three-stage pipeline:
-
-| Stage | Description | Gradient |
-|-------|-------------|----------|
-| **Teacher forcing** | GT input at each step | Per-window |
-| **Pushforward** | Live-gradient chains; curriculum | Through chain |
-| **Rollout** | Free-running with detached feedback | Per-window |
-
-Configurable parameters: `input_window` (L),
-`output_window` (K), noise injection, feedback channel,
-LR reset at stage transitions.
-
-### Running Training
-
-```bash
-# SLURM (8-GPU DDP)
-sbatch train.sbatch
-
-# Or with example configs
-sbatch examples/ufno_co2/train.sbatch U-FNO saturation_training_config
-```
-
-## Loss Functions
-
-The `UnifiedLoss` (`training/losses.py`) combines three
-components:
-
-### Data Losses
-
-| Loss | Formula | Use case |
-|------|---------|----------|
-| `mse` | mean((pred - target)²) | Standard regression |
-| `l1` | mean(\|pred - target\|) | Robust to outliers |
-| `relative_l2` | \|\|pred - target\|\|₂ / \|\|target\|\|₂ | Scale-invariant |
-| `huber` | Smooth L1 with delta threshold | MSE precision + L1 robustness |
-
-Multiple losses can be combined with configurable weights.
-When masking is active, only active cells are selected
-per-sample before computing norms.
-
-### Spatial Derivative Regularization
-
-Penalizes differences in spatial gradients between prediction
-and target using central finite differences on the grid-width
-input channels:
-
-```yaml
-loss:
-  derivative:
-    enabled: true
-    weight: 0.5
-    dims: [dx]          # 2D: [dx, dy], 3D: [dx, dy, dz]
-    metric: null         # inherits first data loss type
-```
-
-### Physics-Informed Losses
-
-```yaml
-loss:
-  physics:
-    mass_conservation:
-      enabled: true
-      weight: 0.5
-      use_cell_volumes: true
-```
-
-Weak mass conservation penalizes discrepancies in
-spatially-integrated quantities between prediction and
-ground truth at each timestep.  Supports cell-volume
-weighting from grid-width channels.
-
-## Evaluation Metrics
-
-**NumPy-based** (post-processing): MRE, MPE, MAE, R², PSNR,
-Relative L1/L2, Normalized MSE
-
-**PyTorch-based** (training): `mse_torch`, `rmse_torch`,
-`mae_torch`, `relative_l2_torch`, `r2_score_torch`, `psnr_torch`
-
-**PhysicsNeMo imports**: `mse`, `rmse`, `Mean`, `Variance`,
-`WeightedMean`, `WeightedVariance`
-
-## Examples
-
-Self-contained experiments with their own configs and
-SLURM scripts.  See [examples/README.md](examples/README.md).
-
-| Example | Description | Dataset |
-|---------|-------------|---------|
-| [ufno_co2](examples/ufno_co2/) | U-FNO (Wen et al. 2022) | CO2 |
-| [udeeponet_co2](examples/udeeponet_co2/) | U-DeepONet (Diab & Al Kobaisi 2024) | CO2 |
-| [fourier_mionet_co2](examples/fourier_mionet_co2/) | Fourier-MIONet (Jiang et al. 2024) | CO2 |
-| [tno_co2](examples/tno_co2/) | TNO (Diab & Al Kobaisi 2025) | CO2 |
-
-## Testing
-
-```bash
-cd examples/reservoir_simulation/neural_operator_factory
-pytest tests/ -v
-```
-
-375 tests covering models, losses, metrics, padding,
-autoregressive utilities, checkpointing, data validation,
-and scalar detection.
 
 ## References
 

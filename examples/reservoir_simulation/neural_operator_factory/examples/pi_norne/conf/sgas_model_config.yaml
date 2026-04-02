@@ -40,13 +40,13 @@ arch:
     # Branch1: processes input fields (11 channels)
     # Pure Fourier spatial encoder for 3D volumetric data
     branch1:
-      encoder: spatial
-      num_fourier_layers: 1
+      encoder: mlp
+      num_fourier_layers: 0
       num_unet_layers: 1
       num_conv_layers: 0
-      modes1: 8
-      modes2: 8
-      modes3: 6
+      modes1: 10
+      modes2: 10
+      modes3: 10
       kernel_size: 3
       dropout: 0.0
       activation_fn: tanh
@@ -55,7 +55,7 @@ arch:
     # Branch2 (t-branch): processes previous solution state
     # Pure Fourier spatial encoder for 3D volumetric data
     branch2:
-      encoder: spatial
+      encoder: mlp
       hidden_width: 128
       num_layers: 1
       num_fourier_layers: 1
@@ -71,17 +71,17 @@ arch:
 
     # Trunk: tanh FNN for time coordinates, linear output (TNO style)
     trunk:
-      input_type: time
+      input_type: grid
       hidden_width: 128
       num_layers: 8
       activation_fn: tanh
-      output_activation: false
+      output_activation: true
 
     # Decoder: temporal projection (width → K timesteps)
-    decoder_type: temporal_projection
+    decoder_type: mlp
     decoder_width: 128
-    decoder_layers: 1
-    decoder_activation_fn: relu
+    decoder_layers: 2
+    decoder_activation_fn: sigmoid
 
 # =============================================================================
 # SGAS Loss Configuration
@@ -89,7 +89,7 @@ arch:
 # relative_l2 data loss + derivative regularization (dx, dy, dz) +
 # weak mass conservation with cell-volume weighting from grid-width channels.
 loss:
-  types: [relative_l2]
+  types: [l1]
   weights: [1.0]
   reduction: mean
   huber_delta: 1.0
