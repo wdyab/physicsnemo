@@ -14,9 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Data loading, validation, and preprocessing utilities.
-"""
+"""Data loading, validation, and preprocessing utilities."""
 
 from data.dataloader import (
     ReservoirDataset,
@@ -24,6 +22,10 @@ from data.dataloader import (
     create_dataloaders,
     get_dataset_info,
 )
+from data.file_resolution import resolve_data_files
+from data.gpu_prefetch import GPUPrefetcher
+from data.mask_detection import MaskResult, detect_mask
+from data.normalization import NormStats, compute_norm_stats, normalize_sample
 from data.scalar_utils import (
     create_mionet_collate_fn,
     detect_scalar_channels,
@@ -44,6 +46,17 @@ __all__ = [
     "collate_fn",
     "create_dataloaders",
     "get_dataset_info",
+    # File resolution
+    "resolve_data_files",
+    # Mask detection
+    "detect_mask",
+    "MaskResult",
+    # Normalization
+    "compute_norm_stats",
+    "normalize_sample",
+    "NormStats",
+    # GPU prefetch
+    "GPUPrefetcher",
     # Validation
     "detect_dimensions",
     "validate_batch_dimensions",

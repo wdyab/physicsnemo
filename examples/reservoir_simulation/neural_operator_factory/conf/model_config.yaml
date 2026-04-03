@@ -190,7 +190,7 @@ arch:
 # cells are selected per-sample so norms are not diluted by zeros.
 # Derivative and physics losses use a union mask across the batch.
 loss:
-  # Data losses: mse, l1, relative_l2, huber
+  # Data losses: mse, l1, relative_l2, huber, usage exmaple: [relative_l2, l1]
   # Multiple types can be combined with weights: [w1, w2, ...]
   types: [relative_l2]
   weights: [1.0]

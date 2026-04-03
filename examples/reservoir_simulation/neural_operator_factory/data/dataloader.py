@@ -28,6 +28,15 @@ from typing import Dict, Optional, Tuple, Union
 import torch
 from torch.utils.data import Dataset
 
+from data.file_resolution import resolve_data_files
+from data.mask_detection import MaskResult, detect_mask
+from data.normalization import (
+    NormStats,
+    compute_norm_stats,
+    identity_norm_stats,
+    normalize_sample,
+)
+
 
 def _log_message(msg: str, rank_zero_only: bool = True):
     """Print message, optionally only on rank 0 in distributed mode."""
@@ -41,9 +50,17 @@ def _log_message(msg: str, rank_zero_only: bool = True):
         print(msg)
 
 
-class ReservoirDataset(Dataset):
+def _load_tensor(path: Path) -> torch.Tensor:
+    """Load a ``.pt`` tensor into CPU memory.
+
+    Uses a standard bulk read which is optimal when the full tensor
+    will be scanned (e.g. for normalization statistics).
     """
-    Unified dataset for reservoir simulation modeling.
+    return torch.load(path, map_location="cpu")
+
+
+class ReservoirDataset(Dataset):
+    """Unified dataset for reservoir simulation modeling.
 
     Automatically detects and handles both 3D and 4D data:
     - 3D: (N, H, W, T, C) input, (N, H, W, T) output
@@ -52,53 +69,25 @@ class ReservoirDataset(Dataset):
     Parameters
     ----------
     data_path : Union[str, Path]
-        Path to the data directory or directly to input file
+        Path to the data directory.
     mode : str
-        Dataset split: 'train', 'val', or 'test'
+        Dataset split: ``'train'``, ``'val'``, or ``'test'``.
     input_file : str, optional
-        Input filename pattern. Supports {mode} placeholder.
-        Default: auto-detect from data_path
+        Input filename pattern (supports ``{mode}`` placeholder).
     output_file : str, optional
-        Output filename pattern. Supports {mode} placeholder.
-        Default: auto-detect from data_path
+        Output filename pattern (supports ``{mode}`` placeholder).
+    variable : str, optional
+        ``'pressure'`` or ``'saturation'`` for CO2 naming convention.
     normalize : bool
-        Whether to normalize data (default: True)
-
-    File Naming Patterns
-    --------------------
-    The dataset supports flexible file naming:
-
-    1. Explicit files:
-       >>> ReservoirDataset(data_path, mode='train',
-       ...     input_file='train_inputs.pt', output_file='train_outputs.pt')
-
-    2. Pattern with {mode} placeholder:
-       >>> ReservoirDataset(data_path, mode='train',
-       ...     input_file='data_{mode}_input.pt', output_file='data_{mode}_output.pt')
-
-    3. CO2 dataset convention (auto-detected):
-       Files: dP_train_a.pt, dP_train_u.pt (or sg_*)
-       >>> ReservoirDataset(data_path, mode='train', variable='pressure')
-
-    4. Generic convention (auto-detected):
-       Files: train_input.pt, train_output.pt
-       >>> ReservoirDataset(data_path, mode='train')
-
-    Examples
-    --------
-    >>> # 3D CO2 dataset
-    >>> ds = ReservoirDataset('data/co2', mode='train', variable='pressure')
-    >>> x, y = ds[0]  # x: (H, W, T, C), y: (H, W, T)
-
-    >>> # 4D Norne dataset with explicit files
-    >>> ds = ReservoirDataset('data/norne', mode='train',
-    ...     input_file='norne_{mode}_input.pt', output_file='norne_{mode}_output.pt')
-    >>> x, y = ds[0]  # x: (X, Y, Z, T, C), y: (X, Y, Z, T)
-
-    >>> # With dimension validation (from config)
-    >>> ds = ReservoirDataset('data/norne', mode='train',
-    ...     input_file='norne_{mode}_input.pt', output_file='norne_{mode}_output.pt',
-    ...     expected_dimensions='4d')  # Raises error if data is 3d
+        Z-score normalize using training-set statistics (default ``True``).
+    expected_dimensions : str, optional
+        ``'3d'`` or ``'4d'``. Raises on mismatch with loaded data.
+    use_mask : bool
+        Enable inactive-cell mask detection (default ``False``).
+    mask_channel : int, optional
+        Explicit mask channel index (overrides auto-detection).
+    num_timesteps : int, optional
+        Truncate the time axis to the first *N* steps (train/val only).
     """
 
     def __init__(
@@ -127,134 +116,80 @@ class ReservoirDataset(Dataset):
         self._config_mask_channel = mask_channel
         self._num_timesteps = num_timesteps
 
-        if self.mode not in ["train", "val", "test"]:
+        if self.mode not in ("train", "val", "test"):
             raise ValueError(f"Mode must be 'train', 'val', or 'test', got {mode}")
 
-        # Resolve file paths
-        self.input_file, self.output_file = self._resolve_file_paths(
-            input_file, output_file, variable
+        # --- File resolution (delegated) ---
+        self.input_file, self.output_file = resolve_data_files(
+            self.data_path, self.mode, input_file, output_file, variable
         )
 
-        # Load data
+        # --- Load data ---
         self._load_data()
 
-        # Truncate time axis if requested
         if self._num_timesteps is not None:
             T = self._num_timesteps
             self.input_data = self.input_data[..., :T, :]
             self.output_data = self.output_data[..., :T]
             _log_message(f"  Truncated to {T} timesteps")
 
-        # Detect dimensions and set metadata
+        # --- Dimension detection ---
         self._detect_dimensions()
 
-        # Resolve masking strategy
-        self.mask_channel = None
-        self.mask_per_sample = False
-        self.static_mask = None
+        # --- Mask detection (delegated) ---
+        self.mask_channel: Optional[int] = None
+        self.mask_per_sample: bool = False
+        self.static_mask: Optional[torch.Tensor] = None
         if self.use_mask:
-            self._resolve_mask()
+            self._apply_mask_detection()
 
-        # Compute normalization
+        # --- Normalization (delegated) ---
+        self._norm_stats: Optional[NormStats] = None
         if self.normalize:
-            self._compute_normalization()
+            self._init_normalization()
 
-    def _resolve_file_paths(
-        self,
-        input_file: Optional[str],
-        output_file: Optional[str],
-        variable: Optional[str],
-    ) -> Tuple[Path, Path]:
-        """Resolve input and output file paths with flexible naming support."""
-
-        # Case 1: Explicit files provided
-        if input_file is not None and output_file is not None:
-            # Replace {mode} placeholder
-            input_name = input_file.format(mode=self.mode)
-            output_name = output_file.format(mode=self.mode)
-            return self.data_path / input_name, self.data_path / output_name
-
-        # Case 2: Variable-based naming (CO2 convention)
-        if variable is not None:
-            var_map = {"pressure": "dP", "saturation": "sg", "dP": "dP", "sg": "sg"}
-            if variable.lower() not in var_map:
-                raise ValueError(
-                    f"Variable must be 'pressure' or 'saturation', got {variable}"
-                )
-            var_prefix = var_map[variable.lower()]
-            return (
-                self.data_path / f"{var_prefix}_{self.mode}_a.pt",
-                self.data_path / f"{var_prefix}_{self.mode}_u.pt",
-            )
-
-        # Case 3: Auto-detect from directory
-        return self._auto_detect_files()
-
-    def _auto_detect_files(self) -> Tuple[Path, Path]:
-        """Auto-detect input/output files from directory."""
-
-        # Common naming patterns to try (in order of preference)
-        patterns = [
-            # Generic pattern
-            (f"{self.mode}_input.pt", f"{self.mode}_output.pt"),
-            (f"input_{self.mode}.pt", f"output_{self.mode}.pt"),
-            (f"{self.mode}_x.pt", f"{self.mode}_y.pt"),
-            (f"x_{self.mode}.pt", f"y_{self.mode}.pt"),
-            # CO2 patterns (try both variables)
-            (f"dP_{self.mode}_a.pt", f"dP_{self.mode}_u.pt"),
-            (f"sg_{self.mode}_a.pt", f"sg_{self.mode}_u.pt"),
-        ]
-
-        for input_name, output_name in patterns:
-            input_path = self.data_path / input_name
-            output_path = self.data_path / output_name
-            if input_path.exists() and output_path.exists():
-                return input_path, output_path
-
-        # List available .pt files for helpful error message
-        pt_files = list(self.data_path.glob("*.pt"))
-        raise FileNotFoundError(
-            f"Could not auto-detect data files in {self.data_path}\n"
-            f"Available .pt files: {[f.name for f in pt_files]}\n"
-            f"Please specify input_file and output_file explicitly."
-        )
+    # ------------------------------------------------------------------
+    # Data loading
+    # ------------------------------------------------------------------
 
     def _load_data(self):
-        """Load data from disk."""
+        """Load input/output tensors from disk."""
         if not self.input_file.exists():
             raise FileNotFoundError(f"Input file not found: {self.input_file}")
         if not self.output_file.exists():
             raise FileNotFoundError(f"Output file not found: {self.output_file}")
 
         _log_message(
-            f"Loading {self.mode} data: {self.input_file.name} -> {self.output_file.name}"
+            f"Loading {self.mode} data: "
+            f"{self.input_file.name} -> {self.output_file.name}"
         )
 
-        self.input_data = torch.load(self.input_file, map_location="cpu")
-        self.output_data = torch.load(self.output_file, map_location="cpu")
+        self.input_data = _load_tensor(self.input_file)
+        self.output_data = _load_tensor(self.output_file)
 
         _log_message(
             f"  Loaded {len(self.input_data)} samples | "
-            f"Input: {tuple(self.input_data.shape)} | Output: {tuple(self.output_data.shape)}"
+            f"Input: {tuple(self.input_data.shape)} | "
+            f"Output: {tuple(self.output_data.shape)}"
         )
 
+    # ------------------------------------------------------------------
+    # Dimension detection
+    # ------------------------------------------------------------------
+
     def _detect_dimensions(self):
-        """Detect spatial dimensions (3D or 4D) from data shape and validate against expected."""
+        """Detect 3D vs 4D from tensor shapes and validate against config."""
         input_ndim = self.input_data.dim()
         output_ndim = self.output_data.dim()
 
-        # 3D data: Input (N, H, W, T, C), Output (N, H, W, T)
         if input_ndim == 5 and output_ndim == 4:
             self.dimensions = "3d"
-            self.spatial_dims = 2  # H, W
+            self.spatial_dims = 2
             self.dim_names = ("H", "W", "T")
-
-        # 4D data: Input (N, X, Y, Z, T, C), Output (N, X, Y, Z, T)
         elif input_ndim == 6 and output_ndim == 5:
             self.dimensions = "4d"
-            self.spatial_dims = 3  # X, Y, Z
+            self.spatial_dims = 3
             self.dim_names = ("X", "Y", "Z", "T")
-
         else:
             raise ValueError(
                 f"Unsupported data dimensions!\n"
@@ -265,217 +200,121 @@ class ReservoirDataset(Dataset):
                 f"  4D: Input (N, X, Y, Z, T, C), Output (N, X, Y, Z, T)"
             )
 
-        # Validate against expected dimensions (from config)
         if (
             self.expected_dimensions is not None
             and self.dimensions != self.expected_dimensions
         ):
             raise ValueError(
-                f"❌ Dimension mismatch!\n"
+                f"Dimension mismatch!\n"
                 f"   Config expects: {self.expected_dimensions}\n"
                 f"   Data has: {self.dimensions}\n"
                 f"   Input shape: {tuple(self.input_data.shape)}\n"
-                f"   Please update arch.dimensions in config to '{self.dimensions}' "
+                f"   Please update arch.dimensions in config to "
+                f"'{self.dimensions}' "
                 f"or use a dataset with {self.expected_dimensions} data."
             )
 
-        # Store shape info
         self.num_samples = self.input_data.shape[0]
-        self.spatial_shape = tuple(self.input_data.shape[1:-2])  # Spatial dims only
+        self.spatial_shape = tuple(self.input_data.shape[1:-2])
         self.time_steps = self.input_data.shape[-2]
         self.num_channels = self.input_data.shape[-1]
 
         _log_message(
             f"  Detected: {self.dimensions.upper()} | "
-            f"Spatial: {self.spatial_shape} | T: {self.time_steps} | C: {self.num_channels}"
+            f"Spatial: {self.spatial_shape} | "
+            f"T: {self.time_steps} | C: {self.num_channels}"
         )
 
-    def _output_inactive_cells(self):
-        """Cells where the output is zero across all timesteps for sample 0.
+    # ------------------------------------------------------------------
+    # Mask detection (delegates to data.mask_detection)
+    # ------------------------------------------------------------------
 
-        This identifies truly inactive (padded) cells: they have zero
-        output at every timestep.  Used to validate that a candidate
-        mask channel's zeros correspond to real inactive cells, not to
-        feature values that happen to be zero (e.g. perforation = 0 in
-        cells that still have non-zero pressure/saturation output).
-        """
-        return self.output_data[0].abs().sum(dim=-1) == 0
+    def _apply_mask_detection(self):
+        """Run mask detection and store results on self."""
+        result: MaskResult = detect_mask(
+            self.input_data, self.output_data, self._config_mask_channel
+        )
+        self.mask_channel = result.channel
+        self.mask_per_sample = result.per_sample
+        self.static_mask = result.static_mask
 
-    def _find_actnum_channel(self):
-        """Find ACTNUM channel index: binary {0,1}, static across time.
-
-        An additional validation requires that the candidate's zero
-        cells are a subset of output-inactive cells (truly padded).
-        This prevents false positives from binary features like
-        perforation maps.
-
-        Returns ``(channel_index, cross_sample_consistent)`` or ``None``.
-        """
-        s0 = self.input_data[0]
-        out_inactive = self._output_inactive_cells()
-        n_check = min(self.input_data.shape[0], 3)
-        candidates = []
-        for ch in range(s0.shape[-1]):
-            col = s0[..., 0, ch]
-            vals = col.unique()
-            if not (vals.numel() <= 2 and all(v in (0.0, 1.0) for v in vals.tolist())):
-                continue
-            if not torch.equal(s0[..., 0, ch], s0[..., -1, ch]):
-                continue
-            zeros = col == 0
-            if (zeros & ~out_inactive).any():
-                continue
-            consistent = all(
-                torch.equal(col, self.input_data[si][..., 0, ch])
-                for si in range(1, n_check)
-            )
-            candidates.append((ch, zeros.sum().item(), consistent))
-        if not candidates:
-            return None
-        best = max(candidates, key=lambda x: x[1])
-        return best[0], best[2]
-
-    def _find_nonzero_mask_channel(self):
-        """Find a channel whose zero pattern marks inactive cells.
-
-        Looks for a channel where some cells are zero at t=0, the same
-        cells are zero at the last timestep (static pattern), and those
-        zero cells are a subset of output-inactive cells (truly padded,
-        not just a feature that happens to be zero).
-
-        Returns ``(channel_index, cross_sample_consistent)`` or ``None``.
-        """
-        s0 = self.input_data[0]
-        out_inactive = self._output_inactive_cells()
-        n_check = min(self.input_data.shape[0], 3)
-        candidates = []
-        for ch in range(s0.shape[-1]):
-            zeros_t0 = s0[..., 0, ch] == 0
-            n_zeros = zeros_t0.sum().item()
-            if n_zeros == 0 or n_zeros == zeros_t0.numel():
-                continue
-            zeros_tlast = s0[..., -1, ch] == 0
-            if not torch.equal(zeros_t0, zeros_tlast):
-                continue
-            if (zeros_t0 & ~out_inactive).any():
-                continue
-            consistent = all(
-                torch.equal(zeros_t0, self.input_data[si][..., 0, ch] == 0)
-                for si in range(1, n_check)
-            )
-            candidates.append((ch, n_zeros, consistent))
-        if not candidates:
-            return None
-        best = max(candidates, key=lambda x: x[1])
-        return best[0], best[2]
-
-    def _resolve_mask(self):
-        """Determine which input channel indicates active cells.
-
-        Detection priority:
-        1. Explicit ``mask_channel`` from config
-        2. ACTNUM auto-detect (binary {0,1}, static across time)
-        3. Non-zero channel fallback (static zero pattern across time)
-        4. No mask (all cells active)
-
-        Sets ``self.mask_channel``, ``self.mask_per_sample``, and
-        ``self.static_mask``.
-        """
-        # Priority 1: Explicit config
-        if self._config_mask_channel is not None:
-            ch = self._config_mask_channel
-            self.mask_channel = ch
-            mask_s0 = self.input_data[0][..., 0, ch] != 0
-            n_check = min(self.input_data.shape[0], 3)
-            consistent = all(
-                torch.equal(mask_s0, self.input_data[si][..., 0, ch] != 0)
-                for si in range(1, n_check)
-            )
-            self.mask_per_sample = not consistent
-            self.static_mask = mask_s0 if not self.mask_per_sample else None
-            n_act = mask_s0.sum().item()
-            n_tot = mask_s0.numel()
-            per_sample_str = " (per-sample)" if self.mask_per_sample else ""
+        if result.method == "none":
+            _log_message("  Mask: none (all cells active)")
+        else:
+            pct = 100 * result.n_active / result.n_total if result.n_total else 0
+            ps = " (per-sample)" if result.per_sample else ""
             _log_message(
-                f"  Mask [config ch {ch}]: {n_act}/{n_tot} active "
-                f"({100 * n_act / n_tot:.1f}%){per_sample_str}"
+                f"  Mask [{result.method} ch {result.channel}]: "
+                f"{result.n_active}/{result.n_total} active "
+                f"({pct:.1f}%){ps}"
             )
-            return
-
-        # Priority 2: ACTNUM auto-detect (binary, static across time)
-        result = self._find_actnum_channel()
-        if result is not None:
-            ch, consistent = result
-            self.mask_channel = ch
-            self.mask_per_sample = not consistent
-            mask_s0 = self.input_data[0][..., 0, ch] != 0
-            self.static_mask = mask_s0 if not self.mask_per_sample else None
-            n_act = mask_s0.sum().item()
-            n_tot = mask_s0.numel()
-            per_sample_str = " (per-sample)" if self.mask_per_sample else ""
-            _log_message(
-                f"  Mask [ACTNUM ch {ch}]: {n_act}/{n_tot} active "
-                f"({100 * n_act / n_tot:.1f}%){per_sample_str}"
-            )
-            return
-
-        # Priority 3: Non-zero channel fallback (static zero pattern)
-        result = self._find_nonzero_mask_channel()
-        if result is not None:
-            ch, consistent = result
-            self.mask_channel = ch
-            self.mask_per_sample = not consistent
-            mask_s0 = self.input_data[0][..., 0, ch] != 0
-            self.static_mask = mask_s0 if not self.mask_per_sample else None
-            n_act = mask_s0.sum().item()
-            n_tot = mask_s0.numel()
-            per_sample_str = " (per-sample)" if self.mask_per_sample else ""
-            _log_message(
-                f"  Mask [nonzero ch {ch}]: {n_act}/{n_tot} active "
-                f"({100 * n_act / n_tot:.1f}%){per_sample_str}"
-            )
-            return
-
-        # Priority 4: No mask
-        self.mask_channel = None
-        self.mask_per_sample = False
-        self.static_mask = None
-        _log_message("  Mask: none (all cells active)")
 
     def get_static_mask(self):
         """Return static spatial mask or None."""
         return self.static_mask
 
-    def _compute_normalization(self):
-        """Compute normalization statistics (dimension-agnostic)."""
+    # ------------------------------------------------------------------
+    # Normalization (delegates to data.normalization)
+    # ------------------------------------------------------------------
+
+    def _init_normalization(self):
+        """Compute or prepare normalization statistics."""
         if self.mode == "train":
-            # Compute mean/std across all dims except channels (last dim)
-            # Works for both 5D (N,H,W,T,C) and 6D (N,X,Y,Z,T,C)
-            reduce_dims = tuple(range(self.input_data.dim() - 1))  # All except last
-
-            self.input_mean = self.input_data.mean(dim=reduce_dims, keepdim=True)
-            self.input_std = self.input_data.std(dim=reduce_dims, keepdim=True)
-            self.output_mean = self.output_data.mean()
-            self.output_std = self.output_data.std()
-
-            # Avoid division by zero
-            self.input_std = torch.where(
-                self.input_std > 1e-6, self.input_std, torch.ones_like(self.input_std)
-            )
-            if self.output_std < 1e-6:
-                self.output_std = torch.tensor(1.0)
-
+            self._norm_stats = compute_norm_stats(self.input_data, self.output_data)
             _log_message(
-                f"  Normalization: Output mean={self.output_mean.item():.4f}, "
-                f"std={self.output_std.item():.4f}"
+                f"  Normalization: Output "
+                f"mean={self._norm_stats.output_mean.item():.4f}, "
+                f"std={self._norm_stats.output_std.item():.4f}"
             )
         else:
-            # Identity normalization for val/test (set from training)
-            shape = [1] * (self.input_data.dim() - 1) + [self.num_channels]
-            self.input_mean = torch.zeros(shape)
-            self.input_std = torch.ones(shape)
-            self.output_mean = torch.tensor(0.0)
-            self.output_std = torch.tensor(1.0)
+            self._norm_stats = identity_norm_stats(
+                self.input_data.dim(), self.num_channels
+            )
+
+    # Backward-compatible properties so existing code that reads
+    # ds.input_mean / ds.input_std / ds.output_mean / ds.output_std
+    # continues to work.
+
+    @property
+    def input_mean(self):
+        """Input channel means (broadcastable)."""
+        return self._norm_stats.input_mean if self._norm_stats else None
+
+    @input_mean.setter
+    def input_mean(self, value):
+        if self._norm_stats is None:
+            self._norm_stats = NormStats(value, value, value, value)
+        self._norm_stats.input_mean = value
+
+    @property
+    def input_std(self):
+        """Input channel standard deviations (broadcastable)."""
+        return self._norm_stats.input_std if self._norm_stats else None
+
+    @input_std.setter
+    def input_std(self, value):
+        if self._norm_stats is not None:
+            self._norm_stats.input_std = value
+
+    @property
+    def output_mean(self):
+        """Scalar output mean."""
+        return self._norm_stats.output_mean if self._norm_stats else None
+
+    @output_mean.setter
+    def output_mean(self, value):
+        if self._norm_stats is not None:
+            self._norm_stats.output_mean = value
+
+    @property
+    def output_std(self):
+        """Scalar output standard deviation."""
+        return self._norm_stats.output_std if self._norm_stats else None
+
+    @output_std.setter
+    def output_std(self, value):
+        if self._norm_stats is not None:
+            self._norm_stats.output_std = value
 
     def set_normalization(
         self,
@@ -484,64 +323,55 @@ class ReservoirDataset(Dataset):
         output_mean: torch.Tensor,
         output_std: torch.Tensor,
     ):
-        """Set normalization parameters from external source (e.g., training set)."""
-        self.input_mean = input_mean
-        self.input_std = input_std
-        self.output_mean = output_mean
-        self.output_std = output_std
+        """Set normalization parameters from an external source."""
+        self._norm_stats = NormStats(input_mean, input_std, output_mean, output_std)
 
     def get_normalization_stats(self) -> Tuple[torch.Tensor, ...]:
-        """Return normalization statistics."""
-        return (self.input_mean, self.input_std, self.output_mean, self.output_std)
+        """Return ``(input_mean, input_std, output_mean, output_std)``."""
+        if self._norm_stats is None:
+            raise RuntimeError("Normalization not initialized")
+        return self._norm_stats.as_tuple()
+
+    # ------------------------------------------------------------------
+    # Dataset interface
+    # ------------------------------------------------------------------
 
     def __len__(self) -> int:
         return self.num_samples
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Get a single sample.
+        """Return a single ``(input, output)`` sample.
 
         Returns
         -------
-        Tuple[torch.Tensor, torch.Tensor]
-            3D: input (H, W, T, C), output (H, W, T)
-            4D: input (X, Y, Z, T, C), output (X, Y, Z, T)
+        Tuple[Tensor, Tensor]
+            3D: ``(H, W, T, C)``, ``(H, W, T)``
+            4D: ``(X, Y, Z, T, C)``, ``(X, Y, Z, T)``
         """
-        input_sample = self.input_data[idx]
-        output_sample = self.output_data[idx]
+        inp = self.input_data[idx]
+        out = self.output_data[idx]
 
-        if self.normalize:
-            # Squeeze the batch dimension from normalization stats for single sample
-            input_mean = self.input_mean.squeeze(0).to(input_sample.device)
-            input_std = self.input_std.squeeze(0).to(input_sample.device)
-            output_mean = self.output_mean.to(output_sample.device)
-            output_std = self.output_std.to(output_sample.device)
+        if self.normalize and self._norm_stats is not None:
+            inp, out = normalize_sample(inp, out, self._norm_stats)
 
-            input_sample = (input_sample - input_mean) / input_std
-            output_sample = (output_sample - output_mean) / output_std
-
-        return input_sample, output_sample
+        return inp, out
 
 
-# =============================================================================
-# Collate Functions
-# =============================================================================
+# =====================================================================
+# Collate
+# =====================================================================
 
 
 def collate_fn(batch):
-    """
-    Universal collate function for reservoir data.
-
-    Works for both 3D and 4D data - simply stacks samples along batch dimension.
-    """
+    """Stack samples along the batch dimension (3D and 4D agnostic)."""
     inputs = torch.stack([item[0] for item in batch], dim=0)
     targets = torch.stack([item[1] for item in batch], dim=0)
     return inputs, targets
 
 
-# =============================================================================
-# Dataloader Factory
-# =============================================================================
+# =====================================================================
+# Dataloader factory
+# =====================================================================
 
 
 def create_dataloaders(
@@ -550,7 +380,6 @@ def create_dataloaders(
     normalize: bool = True,
     num_workers: int = 4,
     device: Union[str, torch.device] = "cuda",
-    # Flexible file specification
     input_file: Optional[str] = None,
     output_file: Optional[str] = None,
     variable: Optional[str] = None,
@@ -559,61 +388,40 @@ def create_dataloaders(
     mask_channel: Optional[int] = None,
     num_timesteps: Optional[int] = None,
 ) -> Tuple[torch.utils.data.DataLoader, ...]:
-    """
-    Create train, validation, and test dataloaders.
-
-    Supports both 3D and 4D datasets with flexible file naming.
+    """Create train, validation, and test dataloaders.
 
     Parameters
     ----------
     data_path : Union[str, Path]
-        Path to the data directory
+        Path to the data directory.
     batch_size : int
-        Batch size (default: 4)
+        Batch size per GPU (default 4).
     normalize : bool
-        Whether to normalize data (default: True)
+        Z-score normalize (default ``True``).
     num_workers : int
-        Number of dataloader workers (default: 4)
+        DataLoader worker processes (default 4).
     device : Union[str, torch.device]
-        Device for pin_memory optimization (default: "cuda")
-    input_file : str, optional
-        Input filename pattern with {mode} placeholder
-    output_file : str, optional
-        Output filename pattern with {mode} placeholder
+        Target device for ``pin_memory`` (default ``"cuda"``).
+    input_file, output_file : str, optional
+        Filename patterns with ``{mode}`` placeholder.
     variable : str, optional
-        Variable name for CO2 convention ('pressure' or 'saturation')
+        ``'pressure'`` or ``'saturation'`` for CO2 convention.
     expected_dimensions : str, optional
-        Expected dimensions ('3d' or '4d') from config. If provided, validates
-        that loaded data matches. Raises error on mismatch.
+        ``'3d'`` or ``'4d'``; raises on mismatch.
+    use_mask : bool
+        Enable mask detection (default ``False``).
+    mask_channel : int, optional
+        Explicit mask channel (overrides auto-detect).
+    num_timesteps : int, optional
+        Truncate train/val time axis; test keeps all.
 
     Returns
     -------
     Tuple[DataLoader, DataLoader, DataLoader]
-        (train_loader, val_loader, test_loader)
-
-    Examples
-    --------
-    >>> # CO2 dataset (3D)
-    >>> train, val, test = create_dataloaders('data/co2', variable='pressure')
-
-    >>> # Norne dataset (4D) with explicit files
-    >>> train, val, test = create_dataloaders(
-    ...     'data/norne',
-    ...     input_file='norne_{mode}_input.pt',
-    ...     output_file='norne_{mode}_output.pt'
-    ... )
-
-    >>> # With dimension validation from config
-    >>> train, val, test = create_dataloaders(
-    ...     'data/norne',
-    ...     input_file='norne_{mode}_input.pt',
-    ...     output_file='norne_{mode}_output.pt',
-    ...     expected_dimensions='4d'  # From cfg.arch.dimensions
-    ... )
+        ``(train_loader, val_loader, test_loader)``
     """
     from torch.utils.data import DataLoader
 
-    # Check distributed mode
     try:
         from physicsnemo.distributed import DistributedManager
 
@@ -622,8 +430,7 @@ def create_dataloaders(
     except Exception:
         is_distributed = False
 
-    # Common kwargs for dataset creation
-    dataset_kwargs = {
+    dataset_kwargs: dict = {
         "data_path": data_path,
         "input_file": input_file,
         "output_file": output_file,
@@ -634,7 +441,6 @@ def create_dataloaders(
         "mask_channel": mask_channel,
     }
 
-    # Create datasets (num_timesteps truncates train/val only; test keeps full trajectory)
     train_dataset = ReservoirDataset(
         mode="train", num_timesteps=num_timesteps, **dataset_kwargs
     )
@@ -643,7 +449,6 @@ def create_dataloaders(
     )
     test_dataset = ReservoirDataset(mode="test", **dataset_kwargs)
 
-    # Share normalization from training set
     if normalize:
         norm_stats = train_dataset.get_normalization_stats()
 
@@ -660,12 +465,10 @@ def create_dataloaders(
         val_dataset.set_normalization(*norm_stats)
         test_dataset.set_normalization(*norm_stats)
 
-    # Determine pin_memory setting
     use_pin_memory = (isinstance(device, torch.device) and device.type == "cuda") or (
         isinstance(device, str) and device == "cuda"
     )
 
-    # Create samplers for distributed training
     train_sampler = val_sampler = test_sampler = None
     if is_distributed:
         from torch.utils.data.distributed import DistributedSampler
@@ -674,8 +477,7 @@ def create_dataloaders(
         val_sampler = DistributedSampler(val_dataset, shuffle=False, drop_last=False)
         test_sampler = DistributedSampler(test_dataset, shuffle=False, drop_last=False)
 
-    # Create dataloaders
-    loader_kwargs = {
+    loader_kwargs: dict = {
         "batch_size": batch_size,
         "num_workers": num_workers,
         "pin_memory": use_pin_memory,
@@ -696,27 +498,28 @@ def create_dataloaders(
         test_dataset, shuffle=False, sampler=test_sampler, **loader_kwargs
     )
 
-    # Log dimensions info
     _log_message(
         f"Created dataloaders: {train_dataset.dimensions.upper()} data | "
-        f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}"
+        f"Train: {len(train_dataset)}, "
+        f"Val: {len(val_dataset)}, "
+        f"Test: {len(test_dataset)}"
     )
 
     return train_loader, val_loader, test_loader
 
 
-# =============================================================================
-# Utility Functions
-# =============================================================================
+# =====================================================================
+# Utility
+# =====================================================================
 
 
 def get_dataset_info(data_path: Union[str, Path], **kwargs) -> Dict:
-    """
-    Get information about a dataset without loading all data.
+    """Quick dataset introspection without full loading overhead.
 
     Returns
     -------
-    Dict with keys: dimensions, spatial_shape, time_steps, num_channels, num_samples
+    dict
+        Keys: dimensions, spatial_shape, time_steps, num_channels, num_samples.
     """
     ds = ReservoirDataset(data_path, mode="train", normalize=False, **kwargs)
     return {

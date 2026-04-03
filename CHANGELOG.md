@@ -10,12 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Examples: Added DeepONet framework for CO2 sequestration modeling in
-  `examples/reservoir_simulation/DeepONet/`. Features multiple neural operator
-  architectures (U-FNO, Conv-FNO, Standalone UNet), physics-informed losses with
-  spatial derivatives and domain masking, distributed training with DDP and AMP,
-  comprehensive experiment tracking (MLFlow, TensorBoard, W&B), and flexible
-  Hydra-based configuration system. (#1255)
+- Examples: Added Neural Operator Factory for reservoir simulation in
+  `examples/reservoir_simulation/neural_operator_factory/`. Config-driven
+  framework supporting FNO, U-FNO, Conv-FNO, FNO4D, DeepONet (7 variants),
+  and TNO architectures on 2D and 3D spatial datasets. Includes physics-informed
+  losses (derivative regularization, mass conservation), three-stage
+  autoregressive training (teacher forcing, pushforward, rollout), per-sample
+  domain masking, multi-GPU DDP, and reproducible examples for U-FNO, U-DeepONet,
+  Fourier-MIONet, and TNO papers on the CO2 sequestration and Norne field
+  datasets.
 
 ### Changed
 

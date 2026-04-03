@@ -57,7 +57,6 @@ arch:
 loss:
   types: [relative_l2]
   weights: [1.0]
-  reduction: mean
 
   derivative:
     enabled: true

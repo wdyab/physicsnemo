@@ -41,12 +41,12 @@ arch:
     # Pure Fourier spatial encoder for 3D volumetric data
     branch1:
       encoder: mlp
-      num_fourier_layers: 6
-      num_unet_layers: 0
+      num_fourier_layers: 1
+      num_unet_layers: 1
       num_conv_layers: 0
-      modes1: 10
-      modes2: 10
-      modes3: 10
+      modes1: 12
+      modes2: 12
+      modes3: 12
       kernel_size: 3
       dropout: 0.0
       activation_fn: tanh
@@ -58,12 +58,12 @@ arch:
       encoder: mlp
       hidden_width: 128
       num_layers: 1
-      num_fourier_layers: 6
+      num_fourier_layers: 10
       num_unet_layers: 0
       num_conv_layers: 0
-      modes1: 10
-      modes2: 10
-      modes3: 10
+      modes1: 12
+      modes2: 12
+      modes3: 12
       kernel_size: 3
       dropout: 0.0
       activation_fn: tanh
@@ -89,10 +89,8 @@ arch:
 # relative_l2 data loss + derivative regularization (dx, dy, dz).
 # Mass conservation is disabled for pressure (not a conserved quantity).
 loss:
-  types: [relative_l2]
-  weights: [1.0]
-  reduction: mean
-  huber_delta: 1.0
+  types: [relative_l2, l1]
+  weights: [0.5, 0.5]
 
   derivative:
     enabled: true

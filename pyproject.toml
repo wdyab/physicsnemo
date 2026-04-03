@@ -140,6 +140,7 @@ exclude = ["docs", "physicsnemo/experimental"]
 
 # Ignore `S101` (assertions) in all `test` files.
 "test/*.py" = ["S101"]
+"examples/**/tests/*.py" = ["S101"]
 
 # ==== UV configuration ====
 [tool.uv]
