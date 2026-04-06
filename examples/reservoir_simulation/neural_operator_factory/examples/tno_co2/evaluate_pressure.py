@@ -67,7 +67,7 @@ def main():
     parser.add_argument(
         "--data_path",
         type=str,
-        default="/lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data",
+        default="/data/co2",
     )
     parser.add_argument("--batch_size", type=int, default=6)
     args = parser.parse_args()

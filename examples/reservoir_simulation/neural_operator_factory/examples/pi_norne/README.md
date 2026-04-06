@@ -1,13 +1,13 @@
-# Physics-Informed TNO for Norne Field Simulation
+# Physics-Informed Fourier-DeepONet for Norne Field Simulation
 
 Physics-informed neural operator surrogate for the Norne reservoir
-simulation dataset using a 4D Temporal Neural Operator with derivative
-regularization and mass conservation losses.
+simulation dataset using a 4D Fourier-DeepONet with derivative
+regularization, mass conservation losses, and autoregressive feedback.
 
 ## Overview
 
-This example trains a TNO on the Norne field dataset — a real-world
-3D reservoir model based on the publicly available
+This example trains a Fourier-DeepONet on the Norne field dataset — a
+real-world 3D reservoir model based on the publicly available
 [Norne Field](https://github.com/OPM/opm-data/tree/master/norne) dataset.
 Norne requires volumetric 4D operators
 (3D spatial + time) and handles complex geological features including
@@ -21,40 +21,49 @@ primary LHS variable is PERMZ (vertical permeability), controlling the
 Kv/Kh ratio.  All simulations were generated using the open-source
 [OPM](https://opm-project.org/) reservoir simulator.
 
-### Architecture
+### Pressure Architecture (Fourier-DeepONet)
 
 | Component | Configuration |
 |-----------|--------------|
-| Branch1 | MLP encoder, tanh |
-| Branch2 (t-branch) | MLP encoder, tanh |
-| Trunk | 8-layer tanh FNN, grid input (x,y,z,t), output activation |
-| Decoder | MLP (2 layers, width 128, sigmoid output) |
-| Width | 128 |
-| Parameters | 196,161 |
-| Dimensions | 4D (46 × 112 × 22 × 65 timesteps) |
+| Branch1 | Linear encoder → 6 Fourier layers, gelu, modes 10×10×6 |
+| Trunk | 12-layer tanh FNN, time input, linear output |
+| Decoder | Temporal projection (width → K=1) |
+| Feedback | Previous prediction appended as extra input channel |
+| Width | 64 |
+| Parameters | 118M |
 
-### Physics-Informed Losses (Saturation Models)
+### Saturation Architecture (Fourier-DeepONet — SWAT / SGAS)
 
-| Loss | Weight | Description |
-|------|--------|-------------|
-| L1 | 1.0 | Data-fitting loss on active cells only |
-| Derivative (dx, dy, dz) | 0.5 | Spatial gradient regularization in all 3 directions |
-| Mass conservation | 0.5 | Weak mass balance with cell-volume weighting |
+| Component | Configuration |
+|-----------|--------------|
+| Branch1 | Linear encoder → 6 Fourier layers, gelu, modes 10×10×6 |
+| Trunk | 12-layer tanh FNN, time input, linear output |
+| Decoder | Temporal projection (width → K=1) |
+| Feedback | Previous prediction appended as extra input channel |
+| Width | 64 |
+| Parameters | 118M |
+
+### Losses
+
+| Variable | Data Loss | Derivative | Mass Conservation |
+|----------|----------|-----------|------------------|
+| Pressure | Relative L2 (w=1.0) | dx, dy, dz (w=0.5) | Disabled |
+| SWAT | L1 (w=1.0) | dx, dy, dz (w=0.5) | Enabled (w=0.5) |
+| SGAS | L1 (w=1.0) | dx, dy, dz (w=0.5) | Enabled (w=0.5) |
 
 ### Training Configuration
 
-| Setting | Value |
-|---------|-------|
-| Regime | Autoregressive: 5 TF + 175 rollout epochs |
-| Rollout mode | `detached` |
-| L / K | 3 / 1 |
-| Batch size | 2 per GPU × 8 GPUs |
-| Optimizer | Adam, lr=1e-3, weight_decay=1e-4 |
-| Scheduler | StepLR(step_size=10, gamma=0.85) |
-| Masking | ACTNUM auto-detect (39.2% active cells) |
-
-Note: Pressure model architecture is under active development and
-uses a separate config (`pressure_model_config.yaml`).
+| Setting | Pressure | Saturations (SWAT / SGAS) |
+|---------|----------|--------------------------|
+| Regime | AR: 10 TF + 90 rollout | AR: 10 TF + 90 rollout |
+| Rollout mode | `detached` | `detached` |
+| L / K | 3 / 1 | 3 / 1 |
+| Feedback channel | enabled | enabled |
+| Batch size | 1 per GPU × 8 GPUs | 1 per GPU × 8 GPUs |
+| Optimizer | Adam, lr=1e-3, wd=1e-4 | Adam, lr=1e-3, wd=1e-4 |
+| Scheduler | StepLR(10, 0.85) | StepLR(10, 0.85) |
+| Masking | ACTNUM ch 5 (39.2%) | ACTNUM auto-detect |
+| Normalize | true | false |
 
 ## Dataset
 
@@ -106,45 +115,53 @@ sbatch examples/pi_norne/train.sbatch sgas_training_config
 ### Evaluation
 
 ```bash
-sbatch examples/pi_norne/eval.sbatch pressure
-sbatch examples/pi_norne/eval.sbatch swat
-sbatch examples/pi_norne/eval.sbatch sgas
+# Pressure (normalize + feedback)
+NORMALIZE=1 FEEDBACK=1 sbatch examples/pi_norne/eval.sbatch pressure
+
+# Saturations (feedback, no normalization)
+FEEDBACK=1 sbatch examples/pi_norne/eval.sbatch swat
+FEEDBACK=1 sbatch examples/pi_norne/eval.sbatch sgas
 
 # With explicit checkpoint
-CHECKPOINT=checkpoints/best_model_pressure_deeponet3d_tno_spatial.pth \
+NORMALIZE=1 FEEDBACK=1 \
+  CHECKPOINT=checkpoints/best_model_pressure_deeponet3d_fourier_deeponet_linear.pth \
   sbatch examples/pi_norne/eval.sbatch pressure
-
-# Pressure requires denormalization
-NORMALIZE=1 sbatch examples/pi_norne/eval.sbatch pressure
 ```
 
 ## Results
+
+### Pressure (Fourier-DeepONet)
+
+| Metric | Value |
+|--------|-------|
+| MAE | 0.92 bar |
+| RMSE | 1.54 bar |
+| Relative L2 | 0.54% |
+| R² | 0.999 |
+| Parameters | 118M |
+| Training time | 3 hr 24 min (8× H100, 100 epochs) |
 
 ### Water Saturation (SWAT)
 
 | Metric | Value |
 |--------|-------|
-| MAE | 4.38e-3 |
-| RMSE | 1.99e-2 |
-| Relative L2 | 2.65% |
-| R² | 0.9977 |
-| Parameters | 196,161 |
-| Training time | 1 hr 45 min (8× H100, 180 epochs) |
+| MAE | 2.91e-3 |
+| RMSE | 7.89e-3 |
+| Relative L2 | 1.05% |
+| R² | 0.9996 |
+| Parameters | 118M |
+| Training time | 3 hr 17 min (8× H100, 100 epochs) |
 
 ### Gas Saturation (SGAS)
 
 | Metric | Value |
 |--------|-------|
-| MAE | 5.72e-3 |
-| RMSE | 2.88e-2 |
-| Relative L2 | 9.73% |
-| R² | 0.9891 |
-| Parameters | 196,161 |
-| Training time | 1 hr 41 min (8× H100, 180 epochs) |
-
-### Pressure
-
-Under active development — results pending.
+| MAE | 1.09e-2 |
+| RMSE | 4.17e-2 |
+| Relative L2 | 14.1% |
+| R² | 0.977 |
+| Parameters | 118M |
+| Training time | 3 hr 15 min (8× H100, 100 epochs) |
 
 ## Files
 
@@ -161,6 +178,6 @@ pi_norne/
     ├── swat_training_config.yaml
     └── sgas_training_config.yaml
 
-Each variable has its own model config, allowing independent architecture tuning
-for pressure vs. saturation variables.
+Each variable has its own model config. All three currently use the same
+Fourier-DeepONet architecture with per-variable loss configuration.
 ```

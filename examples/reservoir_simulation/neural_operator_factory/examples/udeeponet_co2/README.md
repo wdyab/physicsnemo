@@ -31,6 +31,9 @@ Same CO2 sequestration dataset as the U-FNO example:
 - **Input channels**: 12
 - **Samples**: 4,500 train / 500 val / 500 test
 
+The dataset is publicly available at:
+<https://drive.google.com/drive/folders/1fZQfMn_vsjKUXAfRV0q_gswtl8JEkVGo?usp=sharing>
+
 ## Usage
 
 All commands from `neural_operator_factory/`:

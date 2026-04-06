@@ -27,7 +27,7 @@ hydra:
     dir: ./outputs/pi_norne/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 data:
-  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne
+  data_path: /data/norne
   variable: sgas
   input_file: norne_{mode}_a.pt
   output_file: norne_{mode}_sgas.pt
@@ -40,7 +40,7 @@ data:
   num_timesteps: null
 
 training:
-  batch_size: 2
+  batch_size: 1
   initial_lr: 0.001
   checkpoint_dir: ./checkpoints
   validate_freq: 5
@@ -51,12 +51,12 @@ training:
   autoregressive:
     input_window: 3
     output_window: 1
-    teacher_forcing_epochs: 5
+    teacher_forcing_epochs: 10
     pushforward_epochs: 0
-    rollout_epochs: 175
+    rollout_epochs: 90
     max_unroll: 5
     noise_std: 0.0
-    use_feedback_channel: false
+    use_feedback_channel: true
     lr_reset_factor: 1.0
     rollout_mode: detached
 

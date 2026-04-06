@@ -15,16 +15,15 @@
 # limitations under the License.
 
 # =============================================================================
-# PI-Norne — Water Saturation (SWAT) Model Configuration
+# PI-Norne — Water Saturation (SWAT) Fourier-DeepONet Model Configuration
 # =============================================================================
-# 4D Temporal Neural Operator for water saturation prediction on the Norne
-# field.  Uses Fourier + U-Net branch processors on 3D volumetric data
-# (46 x 112 x 22 x 65 timesteps).
-#
-# Water saturation is a conserved quantity — mass conservation loss is enabled.
+# 4D Fourier-DeepONet for water saturation prediction on the Norne field.
+# Branch: 6 Fourier layers (pure spectral processing)
+# Trunk: 12-layer deep MLP for temporal encoding
+# Feedback channel appends previous prediction as extra input.
 #
 # Norne grid: 46 x 112 x 22, 44,431 active cells (39.2%), 65 timesteps
-# Input channels: 11 (PERMX, PERMZ, PORO, PORV, NTG, ACTNUM, xyz, t, WCID)
+# Input channels: 11 + 1 feedback = 12 during AR training
 # Output: water saturation (fraction, [0, 1])
 # =============================================================================
 
@@ -33,55 +32,43 @@ arch:
   model: xdeeponet
 
   xdeeponet:
-    variant: tno
-    width: 128
+    variant: fourier_deeponet
+    width: 64
     padding: 8
 
-    # Branch1: processes input fields (11 channels)
-    # Pure MLP branch (no spatial processing layers)
+    # Branch1: 6 pure Fourier layers for spatial encoding
     branch1:
       encoder:
-        type: mlp
-        hidden_width: 64
-        num_layers: 3
-        activation_fn: tanh
+        type: linear
+        activation_fn: gelu
       layers:
-        num_fourier_layers: 0
+        num_fourier_layers: 6
         num_unet_layers: 0
         num_conv_layers: 0
+        modes1: 10
+        modes2: 10
+        modes3: 6
+        kernel_size: 3
+        dropout: 0.0
+        activation_fn: gelu
 
-    # Branch2 (t-branch): processes previous solution state
-    # Pure MLP branch
-    branch2:
-      encoder:
-        type: mlp
-        hidden_width: 128
-        num_layers: 1
-        activation_fn: tanh
-      layers:
-        num_fourier_layers: 0
-        num_unet_layers: 0
-        num_conv_layers: 0
-
-    # Trunk: tanh FNN for time coordinates, linear output (TNO style)
+    # Trunk: 12-layer deep MLP for time coordinates
     trunk:
-      input_type: grid
+      input_type: time
       hidden_width: 128
-      num_layers: 8
+      num_layers: 12
       activation_fn: tanh
-      output_activation: true
+      output_activation: false
 
-    # Decoder: temporal projection (width → K timesteps)
-    decoder_type: mlp
-    decoder_width: 128
-    decoder_layers: 2
-    decoder_activation_fn: sigmoid
+    # Decoder: temporal projection for single-step output
+    decoder_type: temporal_projection
+    decoder_width: 64
+    decoder_layers: 1
+    decoder_activation_fn: relu
 
 # =============================================================================
 # SWAT Loss Configuration
 # =============================================================================
-# relative_l2 data loss + derivative regularization (dx, dy, dz) +
-# weak mass conservation with cell-volume weighting from grid-width channels.
 loss:
   types: [l1]
   weights: [1.0]

@@ -157,7 +157,7 @@ def main():
     parser.add_argument(
         "--data_path",
         type=str,
-        default="/lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne",
+        default="/data/norne",
     )
     parser.add_argument(
         "--input_file",
@@ -187,6 +187,12 @@ def main():
         "--mask",
         action="store_true",
         help="Auto-detect ACTNUM and evaluate on active cells only",
+    )
+    parser.add_argument(
+        "--feedback",
+        action="store_true",
+        help="Enable feedback channel (append previous prediction as extra input). "
+        "Auto-detected from checkpoint if feedback_channel is saved.",
     )
     parser.add_argument(
         "--mode",
@@ -244,7 +250,9 @@ def main():
     is_tno = model_config.get("variant", "") == "tno"
     feedback_channel = model_config.get("feedback_channel", None)
     if args.tno:
-        is_tno = True  # CLI override
+        is_tno = True
+    if args.feedback:
+        feedback_channel = 1
 
     print("=" * 70)
     print("NEURAL OPERATOR FACTORY - NORNE EVALUATION")

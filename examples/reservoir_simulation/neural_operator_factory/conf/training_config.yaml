@@ -42,7 +42,7 @@ data:
   # - 3d: expects (N, H, W, T, C) input, (N, H, W, T) output
   # - 4d: expects (N, X, Y, Z, T, C) input, (N, X, Y, Z, T) output
   
-  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne
+  data_path: /data/norne
   
   # Variable name — used for checkpoint naming and metric selection, not file resolution.
   # Choices: 'pressure', 'saturation'

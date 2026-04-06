@@ -95,11 +95,11 @@ Each example ships with configs that reproduce published results:
 
 | Example | Paper | Architecture | Dataset |
 |---------|-------|-------------|---------|
+| [pi_norne](examples/pi_norne/) | — | Fourier-DeepONet + feedback | Norne field (3D) |
 | [ufno_co2](examples/ufno_co2/) | Wen et al. 2022 | FNO, Conv-FNO, U-FNO | CO2 sequestration |
 | [udeeponet_co2](examples/udeeponet_co2/) | Diab & Al Kobaisi 2024 | U-DeepONet | CO2 sequestration |
 | [fourier_mionet_co2](examples/fourier_mionet_co2/) | Jiang et al. 2024 | MIONet, Fourier-MIONet | CO2 sequestration |
 | [tno_co2](examples/tno_co2/) | Diab & Al Kobaisi 2025 | TNO | CO2 sequestration |
-| [pi_norne](examples/pi_norne/) | — | Physics-informed TNO | Norne field (4D) |
 
 ## Dataset Format
 
@@ -122,6 +122,10 @@ auto-detects binary ACTNUM masks, falls back to non-zero
 pattern detection, and supports per-sample masks when reservoir
 geometry varies across realizations.
 
+The CO2 sequestration dataset used by the included examples is
+publicly available at:
+<https://drive.google.com/drive/folders/1fZQfMn_vsjKUXAfRV0q_gswtl8JEkVGo?usp=sharing>
+
 ## Project Structure
 
 ```text
@@ -131,7 +135,7 @@ neural_operator_factory/
 ├── training/            train.py, losses.py, physics_losses.py, ar_utils.py, metrics.py
 ├── utils/               checkpoint.py, padding.py, co2_normalization.py
 ├── conf/                model_config.yaml, training_config.yaml
-├── examples/            ufno_co2/, udeeponet_co2/, fourier_mionet_co2/, tno_co2/, pi_norne/
+├── examples/            pi_norne/, ufno_co2/, udeeponet_co2/, fourier_mionet_co2/, tno_co2/
 └── tests/               375 unit tests
 ```
 

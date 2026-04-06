@@ -46,7 +46,7 @@ arch:
     decoder_width: 96
 
 data:
-  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
+  data_path: /data/co2
   variable: pressure
   input_file: null
   output_file: null

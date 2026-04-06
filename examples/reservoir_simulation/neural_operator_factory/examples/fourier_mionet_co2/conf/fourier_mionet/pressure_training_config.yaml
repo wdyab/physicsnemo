@@ -25,7 +25,7 @@ hydra:
     dir: ./outputs/fourier_mionet_co2/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 data:
-  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
+  data_path: /data/co2
   variable: pressure
   input_file: null
   output_file: null

@@ -15,16 +15,15 @@
 # limitations under the License.
 
 # =============================================================================
-# PI-Norne — Pressure Model Configuration
+# PI-Norne — Pressure Fourier-DeepONet Model Configuration
 # =============================================================================
-# 4D Temporal Neural Operator for pressure prediction on the Norne field.
-# Uses Fourier + U-Net branch processors on 3D volumetric data
-# (46 x 112 x 22 x 65 timesteps).
-#
-# Pressure is not a conserved quantity, so mass conservation loss is disabled.
+# 4D Fourier-DeepONet for pressure prediction on the Norne field.
+# Branch: 6 Fourier layers (pure spectral processing)
+# Trunk: 12-layer deep MLP for temporal encoding
+# Feedback channel appends previous prediction as extra input.
 #
 # Norne grid: 46 x 112 x 22, 44,431 active cells (39.2%), 65 timesteps
-# Input channels: 11 (PERMX, PERMZ, PORO, PORV, NTG, ACTNUM, xyz, t, WCID)
+# Input channels: 11 + 1 feedback = 12 during AR training
 # Output: pressure (bar)
 # =============================================================================
 
@@ -33,62 +32,43 @@ arch:
   model: xdeeponet
 
   xdeeponet:
-    variant: tno
+    variant: fourier_deeponet
     width: 64
     padding: 8
 
-    # Branch1: processes input fields (11 channels)
+    # Branch1: 6 pure Fourier layers for spatial encoding
     branch1:
       encoder:
         type: linear
-        activation_fn: relu
-      layers:
-        num_fourier_layers: 6
-        num_unet_layers: 0
-        num_conv_layers: 0
-        modes1: 12
-        modes2: 12
-        modes3: 12
-        kernel_size: 3
-        dropout: 0.0
-        activation_fn: relu
-      internal_resolution: null
-
-    # Branch2 (t-branch): processes previous solution state
-    branch2:
-      encoder:
-        type: linear
-        activation_fn: tanh
+        activation_fn: gelu
       layers:
         num_fourier_layers: 6
         num_unet_layers: 0
         num_conv_layers: 0
         modes1: 10
         modes2: 10
-        modes3: 10
+        modes3: 6
         kernel_size: 3
         dropout: 0.0
-        activation_fn: relu
+        activation_fn: gelu
 
-    # Trunk: tanh FNN for time coordinates, linear output (TNO style)
+    # Trunk: 12-layer deep MLP for time coordinates
     trunk:
       input_type: time
-      hidden_width: 64
-      num_layers: 8
+      hidden_width: 128
+      num_layers: 12
       activation_fn: tanh
-      output_activation: true
+      output_activation: false
 
-    # Decoder: mlp
-    decoder_type: mlp
+    # Decoder: temporal projection for single-step output
+    decoder_type: temporal_projection
     decoder_width: 64
-    decoder_layers: 2
+    decoder_layers: 1
     decoder_activation_fn: relu
 
 # =============================================================================
 # Pressure Loss Configuration
 # =============================================================================
-# relative_l2 data loss + derivative regularization (dx, dy, dz).
-# Mass conservation is disabled for pressure (not a conserved quantity).
 loss:
   types: [relative_l2]
   weights: [1.0]
@@ -102,6 +82,3 @@ loss:
   physics:
     mass_conservation:
       enabled: false
-      weight: 0.5
-      use_cell_volumes: true
-      metric: null

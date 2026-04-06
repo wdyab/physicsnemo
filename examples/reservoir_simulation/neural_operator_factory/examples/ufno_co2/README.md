@@ -28,6 +28,9 @@ All models use width=36, Fourier modes (10, 10, 10), and a 2-layer MLP decoder (
 - **Output**: Gas saturation `sg` or pressure buildup `dP` (separate models)
 - **Samples**: 4,500 train / 500 val / 500 test
 
+The dataset is publicly available at:
+<https://drive.google.com/drive/folders/1fZQfMn_vsjKUXAfRV0q_gswtl8JEkVGo?usp=sharing>
+
 ## Usage
 
 All commands are run from the `neural_operator_factory/` directory.
