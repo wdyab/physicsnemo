@@ -63,20 +63,31 @@ def print_model_architecture(model, model_type: str, dimensions: str, cfg, logge
 
         # Branch configuration
         branch1_cfg = cfg.arch.xdeeponet.get("branch1", {})
+        b1_enc = branch1_cfg.get("encoder", {})
+        b1_layers = branch1_cfg.get("layers", {})
+        b1_enc_type = (
+            b1_enc.get("type", "linear") if isinstance(b1_enc, dict) else b1_enc
+        )
         logger.info("Branch 1:")
-        logger.info(f"  Type: {branch1_cfg.get('encoder', 'spatial')}")
+        logger.info(f"  Encoder: {b1_enc_type}")
         logger.info("  In Channels: auto (inferred from input tensor)")
-        logger.info(f"  Fourier Layers: {branch1_cfg.get('num_fourier_layers', 0)}")
-        logger.info(f"  UNet Layers: {branch1_cfg.get('num_unet_layers', 0)}")
-        logger.info(f"  Conv Layers: {branch1_cfg.get('num_conv_layers', 0)}")
-        logger.info(f"  Activation: {branch1_cfg.get('activation_fn', 'sin')}")
+        logger.info(f"  Fourier Layers: {b1_layers.get('num_fourier_layers', 0)}")
+        logger.info(f"  UNet Layers: {b1_layers.get('num_unet_layers', 0)}")
+        logger.info(f"  Conv Layers: {b1_layers.get('num_conv_layers', 0)}")
+        logger.info(f"  Layer Activation: {b1_layers.get('activation_fn', 'sin')}")
 
-        if variant in ["mionet", "fourier_mionet"]:
+        if variant in ["mionet", "fourier_mionet", "tno"]:
             branch2_cfg = cfg.arch.xdeeponet.get("branch2", {})
+            b2_enc = branch2_cfg.get("encoder", {})
+            b2_layers = branch2_cfg.get("layers", {})
+            b2_enc_type = (
+                b2_enc.get("type", "linear") if isinstance(b2_enc, dict) else b2_enc
+            )
             logger.info("Branch 2:")
-            logger.info(f"  Type: {branch2_cfg.get('encoder', 'mlp')}")
-            logger.info("  In Features: auto (inferred from input)")
-            logger.info(f"  Activation: {branch2_cfg.get('activation_fn', 'relu')}")
+            logger.info(f"  Encoder: {b2_enc_type}")
+            logger.info(f"  Fourier Layers: {b2_layers.get('num_fourier_layers', 0)}")
+            logger.info(f"  UNet Layers: {b2_layers.get('num_unet_layers', 0)}")
+            logger.info(f"  Layer Activation: {b2_layers.get('activation_fn', 'sin')}")
 
         # Trunk configuration
         trunk_cfg = cfg.arch.xdeeponet.get("trunk", {})
@@ -390,6 +401,15 @@ def main(cfg: DictConfig) -> None:
     sample_inputs, _ = next(iter(train_loader))
     in_channels = sample_inputs.shape[-1]  # Last dimension is channels
 
+    # Account for feedback channel (appended during AR training)
+    _ar_feedback_init = cfg.training.get(
+        "regime", "full_mapping"
+    ).lower() == "autoregressive" and cfg.training.autoregressive.get(
+        "use_feedback_channel", False
+    )
+    if _ar_feedback_init:
+        in_channels += 1
+
     if model_type == "xfno":
         xfno_cfg = cfg.arch.xfno
 
@@ -494,9 +514,11 @@ def main(cfg: DictConfig) -> None:
                     "decoder_activation_fn", "relu"
                 ),
             ).to(dist.device)
-            model_arch_name = (
-                f"deeponet3d_{variant}_{branch1_config.get('encoder', 'spatial')}"
+            b1_enc = branch1_config.get("encoder", "spatial")
+            b1_enc_name = (
+                b1_enc.get("type", "linear") if not isinstance(b1_enc, str) else b1_enc
             )
+            model_arch_name = f"deeponet3d_{variant}_{b1_enc_name}"
         else:
             # 3D DeepONet (2D spatial + time)
             logger.info(
@@ -517,9 +539,11 @@ def main(cfg: DictConfig) -> None:
                     "decoder_activation_fn", "relu"
                 ),
             ).to(dist.device)
-            model_arch_name = (
-                f"deeponet_{variant}_{branch1_config.get('encoder', 'spatial')}"
+            b1_enc = branch1_config.get("encoder", "spatial")
+            b1_enc_name = (
+                b1_enc.get("type", "linear") if not isinstance(b1_enc, str) else b1_enc
             )
+            model_arch_name = f"deeponet_{variant}_{b1_enc_name}"
 
     else:
         raise ValueError(f"Unknown model: {model_type}. Use 'xfno' or 'xdeeponet'.")
@@ -537,20 +561,24 @@ def main(cfg: DictConfig) -> None:
 
     # Initialize lazy modules with a dummy forward pass (required for DDP)
     # This is needed because nn.LazyLinear doesn't know its input size until first forward
+    _ar_feedback_init = regime == "autoregressive" and cfg.training.autoregressive.get(
+        "use_feedback_channel", False
+    )
     if dist.rank == 0:
         logger.info("Initializing model with dummy forward pass...")
     with torch.no_grad():
         dummy_batch = next(iter(train_loader))
         dummy_input = dummy_batch[0].to(dist.device)
+        if _ar_feedback_init:
+            dummy_fb = torch.zeros_like(dummy_input[..., :1])
+            dummy_input = torch.cat([dummy_input, dummy_fb], dim=-1)
         if is_tno:
             dummy_target = dummy_batch[1].to(dist.device)
             _L = cfg.training.autoregressive.input_window
             dummy_b2 = dummy_target[..., :_L]
             _ = model(dummy_input, x_branch2=dummy_b2)
         elif has_branch2:
-            # MIONet/Fourier-MIONet: branch2 receives scalar inputs.
-            # Pass a dummy tensor so LazyLinear layers materialise.
-            dummy_b2 = dummy_input[:, 0, 0, 0, :]  # (B, C) scalar slice
+            dummy_b2 = dummy_input[:, 0, 0, 0, :]
             _ = model(dummy_input, x_branch2=dummy_b2)
         else:
             _ = model(dummy_input)
@@ -691,7 +719,11 @@ def main(cfg: DictConfig) -> None:
                     "variant": xdeeponet_cfg.variant,
                     "width": xdeeponet_cfg.width,
                     "padding": xdeeponet_cfg.padding,
-                    "branch1_type": xdeeponet_cfg.branch1.type,
+                    "branch1_encoder": xdeeponet_cfg.branch1.get("encoder", {}).get(
+                        "type", "linear"
+                    )
+                    if isinstance(xdeeponet_cfg.branch1.get("encoder"), dict)
+                    else xdeeponet_cfg.branch1.get("encoder", "spatial"),
                 }
             )
 

@@ -49,6 +49,123 @@ from physicsnemo.models.mlp import FullyConnected
 from physicsnemo.models.module import Module
 
 # =============================================================================
+# Branch Config Normalization
+# =============================================================================
+
+
+def _normalize_branch_config(config: dict) -> dict:
+    """Normalize branch config to the nested encoder/layers format.
+
+    Supports two formats:
+
+    **New format** (nested)::
+
+        branch1:
+          encoder:
+            type: linear       # "linear" (LazyLinear lift) or "mlp"
+            hidden_width: 64   # MLP-only settings
+            num_layers: 2
+            activation_fn: tanh
+          layers:
+            num_fourier_layers: 3
+            num_unet_layers: 1
+            num_conv_layers: 0
+            modes1: 12
+            ...
+          internal_resolution: null
+
+    **Old format** (flat, auto-converted for backward compat)::
+
+        branch1:
+          encoder: spatial     # or "mlp"
+          num_fourier_layers: 3
+          hidden_width: 64
+          ...
+
+    Returns a dict in the new format.
+    """
+    if "encoder" not in config:
+        return config
+
+    enc = config["encoder"]
+
+    if not isinstance(enc, str):
+        return config
+
+    enc_type_str = str(enc).lower()
+    cfg = dict(config)
+    cfg.pop("encoder")
+
+    encoder_keys = {"hidden_width", "num_layers"}
+    layer_keys = {
+        "num_fourier_layers",
+        "num_unet_layers",
+        "num_conv_layers",
+        "modes1",
+        "modes2",
+        "modes3",
+        "kernel_size",
+        "dropout",
+        "unet_impl",
+    }
+
+    activation = cfg.pop("activation_fn", "sin")
+    internal_res = cfg.pop("internal_resolution", None)
+    in_channels = cfg.pop("in_channels", None)
+
+    encoder_dict = {
+        "type": "mlp" if enc_type_str == "mlp" else "linear",
+        "activation_fn": activation,
+    }
+    for k in encoder_keys:
+        if k in cfg:
+            encoder_dict[k] = cfg.pop(k)
+
+    layers_dict = {"activation_fn": activation}
+    for k in layer_keys:
+        if k in cfg:
+            layers_dict[k] = cfg.pop(k)
+
+    result = {"encoder": encoder_dict, "layers": layers_dict}
+    if internal_res is not None:
+        result["internal_resolution"] = internal_res
+    if in_channels is not None:
+        result["in_channels"] = in_channels
+
+    return result
+
+
+def _build_conv_encoder(width: int, enc_config: dict) -> nn.Module:
+    """Build a multi-layer pointwise encoder to replace the default LazyLinear lift.
+
+    Operates in channels-last format ``(B, *spatial, C)`` — matching the
+    SpatialBranch lift interface.  Each layer is a ``Linear`` with activation,
+    equivalent to a 1x1 convolution applied independently at every spatial point.
+
+    Parameters
+    ----------
+    width : int
+        Output width (latent dimension).
+    enc_config : dict
+        Encoder config with optional ``num_layers``, ``hidden_width``,
+        ``activation_fn``.
+    """
+    num_layers = enc_config.get("num_layers", 1)
+    activation_fn = enc_config.get("activation_fn", "relu")
+    act = get_activation(activation_fn)
+
+    if num_layers <= 1:
+        return nn.LazyLinear(width)
+
+    hidden_width = enc_config.get("hidden_width", width // 2)
+    layers_list = [nn.LazyLinear(hidden_width), act]
+    for _ in range(num_layers - 2):
+        layers_list.extend([nn.Linear(hidden_width, hidden_width), act])
+    layers_list.append(nn.Linear(hidden_width, width))
+    return nn.Sequential(*layers_list)
+
+
+# =============================================================================
 # Shared Components
 # =============================================================================
 
@@ -384,33 +501,45 @@ class DeepONet(Module):
             self.temporal_head = nn.Linear(self.width, K).to(device)
 
     def _build_branch(self, config: dict, width: int) -> nn.Module:
-        branch_type = config.get("encoder", "spatial")
-        activation = config.get("activation_fn", "sin")
+        config = _normalize_branch_config(config)
+        enc = config.get("encoder", {})
+        layers = config.get("layers", {})
 
-        if branch_type == "mlp":
+        enc_type = enc.get("type", "linear")
+        enc_activation = enc.get("activation_fn", "sin")
+
+        has_layers = (
+            layers.get("num_fourier_layers", 0)
+            + layers.get("num_unet_layers", 0)
+            + layers.get("num_conv_layers", 0)
+        ) > 0
+
+        if enc_type == "mlp" and not has_layers:
             return MLPBranch(
                 out_features=width,
-                hidden_width=config.get("hidden_width", 64),
-                num_layers=config.get("num_layers", 3),
-                activation_fn=activation,
+                hidden_width=enc.get("hidden_width", 64),
+                num_layers=enc.get("num_layers", 3),
+                activation_fn=enc_activation,
             )
-        elif branch_type == "spatial":
-            return SpatialBranch(
-                in_channels=config.get("in_channels", 12),
-                width=width,
-                num_fourier_layers=config.get("num_fourier_layers", 3),
-                num_unet_layers=config.get("num_unet_layers", 0),
-                num_conv_layers=config.get("num_conv_layers", 0),
-                modes1=config.get("modes1", 12),
-                modes2=config.get("modes2", 12),
-                kernel_size=config.get("kernel_size", 3),
-                dropout=config.get("dropout", 0.0),
-                unet_impl=config.get("unet_impl", "custom"),
-                activation_fn=activation,
-                internal_resolution=config.get("internal_resolution", None),
-            )
-        else:
-            raise ValueError(f"Unknown branch type: {branch_type}")
+
+        layer_activation = layers.get("activation_fn", enc_activation)
+        branch = SpatialBranch(
+            in_channels=config.get("in_channels", 12),
+            width=width,
+            num_fourier_layers=layers.get("num_fourier_layers", 0),
+            num_unet_layers=layers.get("num_unet_layers", 0),
+            num_conv_layers=layers.get("num_conv_layers", 0),
+            modes1=layers.get("modes1", 12),
+            modes2=layers.get("modes2", 12),
+            kernel_size=layers.get("kernel_size", 3),
+            dropout=layers.get("dropout", 0.0),
+            unet_impl=layers.get("unet_impl", "custom"),
+            activation_fn=layer_activation,
+            internal_resolution=config.get("internal_resolution", None),
+        )
+        if enc_type == "conv":
+            branch.lift = _build_conv_encoder(width, enc)
+        return branch
 
     def _build_decoder(
         self,
@@ -862,34 +991,46 @@ class DeepONet3D(Module):
             self.temporal_head = nn.Linear(self.width, K).to(device)
 
     def _build_branch(self, config: dict, width: int) -> nn.Module:
-        branch_type = config.get("encoder", "spatial")
-        activation = config.get("activation_fn", "sin")
+        config = _normalize_branch_config(config)
+        enc = config.get("encoder", {})
+        layers = config.get("layers", {})
 
-        if branch_type == "mlp":
+        enc_type = enc.get("type", "linear")
+        enc_activation = enc.get("activation_fn", "sin")
+
+        has_layers = (
+            layers.get("num_fourier_layers", 0)
+            + layers.get("num_unet_layers", 0)
+            + layers.get("num_conv_layers", 0)
+        ) > 0
+
+        if enc_type == "mlp" and not has_layers:
             return MLPBranch(
                 out_features=width,
-                hidden_width=config.get("hidden_width", 64),
-                num_layers=config.get("num_layers", 3),
-                activation_fn=activation,
+                hidden_width=enc.get("hidden_width", 64),
+                num_layers=enc.get("num_layers", 3),
+                activation_fn=enc_activation,
             )
-        elif branch_type == "spatial":
-            return SpatialBranch3D(
-                in_channels=config.get("in_channels", 11),
-                width=width,
-                num_fourier_layers=config.get("num_fourier_layers", 0),
-                num_unet_layers=config.get("num_unet_layers", 0),
-                num_conv_layers=config.get("num_conv_layers", 0),
-                modes1=config.get("modes1", 10),
-                modes2=config.get("modes2", 10),
-                modes3=config.get("modes3", 8),
-                kernel_size=config.get("kernel_size", 3),
-                dropout=config.get("dropout", 0.0),
-                unet_impl=config.get("unet_impl", "custom"),
-                activation_fn=activation,
-                internal_resolution=config.get("internal_resolution", None),
-            )
-        else:
-            raise ValueError(f"Unknown branch type: {branch_type}")
+
+        layer_activation = layers.get("activation_fn", enc_activation)
+        branch = SpatialBranch3D(
+            in_channels=config.get("in_channels", 11),
+            width=width,
+            num_fourier_layers=layers.get("num_fourier_layers", 0),
+            num_unet_layers=layers.get("num_unet_layers", 0),
+            num_conv_layers=layers.get("num_conv_layers", 0),
+            modes1=layers.get("modes1", 10),
+            modes2=layers.get("modes2", 10),
+            modes3=layers.get("modes3", 8),
+            kernel_size=layers.get("kernel_size", 3),
+            dropout=layers.get("dropout", 0.0),
+            unet_impl=layers.get("unet_impl", "custom"),
+            activation_fn=layer_activation,
+            internal_resolution=config.get("internal_resolution", None),
+        )
+        if enc_type == "conv":
+            branch.lift = _build_conv_encoder(width, enc)
+        return branch
 
     def _build_decoder(
         self,

@@ -32,23 +32,31 @@ arch:
     padding: 8
 
     branch1:
-      encoder: spatial
-      num_fourier_layers: 0
-      num_unet_layers: 0
-      num_conv_layers: 1
-      modes1: 12
-      modes2: 12
-      kernel_size: 3
-      dropout: 0.0
-      unet_impl: custom
-      activation_fn: relu
+      encoder:
+        type: linear
+        activation_fn: relu
+      layers:
+        num_fourier_layers: 0
+        num_unet_layers: 0
+        num_conv_layers: 1
+        modes1: 12
+        modes2: 12
+        kernel_size: 3
+        dropout: 0.0
+        unet_impl: custom
+        activation_fn: relu
       internal_resolution: null
 
     branch2:
-      encoder: mlp
-      hidden_width: 36
-      num_layers: 3
-      activation_fn: relu
+      encoder:
+        type: mlp
+        hidden_width: 36
+        num_layers: 3
+        activation_fn: relu
+      layers:
+        num_fourier_layers: 0
+        num_unet_layers: 0
+        num_conv_layers: 0
 
     trunk:
       input_type: time

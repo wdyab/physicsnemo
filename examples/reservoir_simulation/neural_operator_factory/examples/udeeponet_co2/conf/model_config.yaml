@@ -39,16 +39,19 @@ arch:
 
     # Branch: 3 U-Net blocks in series (no Fourier layers)
     branch1:
-      encoder: spatial
-      num_fourier_layers: 0
-      num_unet_layers: 3
-      num_conv_layers: 0
-      modes1: 12
-      modes2: 12
-      kernel_size: 3
-      dropout: 0.0
-      unet_impl: custom
-      activation_fn: sin
+      encoder:
+        type: linear
+        activation_fn: sin
+      layers:
+        num_fourier_layers: 0
+        num_unet_layers: 3
+        num_conv_layers: 0
+        modes1: 12
+        modes2: 12
+        kernel_size: 3
+        dropout: 0.0
+        unet_impl: custom
+        activation_fn: sin
       internal_resolution: null
 
     # Trunk: 10-layer sinusoidal FNN processing time only

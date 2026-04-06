@@ -42,35 +42,35 @@ arch:
     # Branch1: processes input fields (4 spatial + 5 scalar channels)
     # Lifting → U-Net → ReLU output
     branch1:
-      encoder: spatial
-      num_fourier_layers: 0
-      num_unet_layers: 1
-      num_conv_layers: 0
-      modes1: 12
-      modes2: 12
-      kernel_size: 3
-      dropout: 0.0
-      unet_impl: custom
-      activation_fn: relu
+      encoder:
+        type: linear
+        activation_fn: relu
+      layers:
+        num_fourier_layers: 0
+        num_unet_layers: 1
+        num_conv_layers: 0
+        modes1: 12
+        modes2: 12
+        kernel_size: 3
+        dropout: 0.0
+        unet_impl: custom
+        activation_fn: relu
       internal_resolution: null
 
     # Branch2 (t-branch): processes previous solution state
     # Lifting → U-Net → ReLU output
     branch2:
-      encoder: spatial
-      hidden_width: 96
-      num_layers: 1
-      num_fourier_layers: 0
-      num_unet_layers: 1
-      num_conv_layers: 0
-      modes1: 0
-      modes2: 0
-      modes3: 0
-      kernel_size: 3
-      dropout: 0.0
-      unet_impl: custom
-      activation_fn: relu
-      internal_resolution: null
+      encoder:
+        type: linear
+        activation_fn: relu
+      layers:
+        num_fourier_layers: 0
+        num_unet_layers: 1
+        num_conv_layers: 0
+        kernel_size: 3
+        dropout: 0.0
+        unet_impl: custom
+        activation_fn: relu
 
     # Trunk: tanh FNN, narrow (40) but deep (14 layers), linear output.
     # Original code: TimeNN(in_width=L, hidden_width=40, output_dim=width, num_layers=14)

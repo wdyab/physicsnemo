@@ -14,58 +14,51 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# =============================================================================
-# U-DeepONet — Pressure Buildup (CO2 Sequestration)
-# =============================================================================
-# Width = 96 (overrides model_config.yaml default of 64).
-# Expected test-set results (paper Table 4b):
-#   MRE = 0.0072,  MAE = 0.64,  R² = 0.994
-# =============================================================================
+# PI-Norne — Pressure FNO4D (Norne Field)
 
 defaults:
-  - model_config
+  - pressure_fno_model_config
   - _self_
 
 hydra:
   job:
     chdir: False
   run:
-    dir: ./outputs/udeeponet_co2/${now:%Y-%m-%d}/${now:%H-%M-%S}
-
-# Override width from 64 to 96, and UNet activation from sin to relu
-arch:
-  xdeeponet:
-    width: 96
-    branch1:
-      encoder:
-        activation_fn: relu
-      layers:
-        activation_fn: relu
-    trunk:
-      hidden_width: 96
-    decoder_width: 96
+    dir: ./outputs/pi_norne/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 data:
-  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data
+  data_path: /lustre/fsw/coreai_climate_earth2/wdyab/physicsnemo_data/norne
   variable: pressure
-  input_file: null
-  output_file: null
-  normalize: false
+  input_file: norne_{mode}_a.pt
+  output_file: norne_{mode}_pressure.pt
+  normalize: true
   num_workers: 4
-  val_metric: mre
+  val_metric: rmse
   mask_enabled: true
-  mask_channel: 0
+  mask_channel: 5
   denormalize_fn: null
+  num_timesteps: null
 
 training:
-  batch_size: 4
-  epochs: 140
-  initial_lr: 0.0006
+  batch_size: 1
+  initial_lr: 0.001
   checkpoint_dir: ./checkpoints
   validate_freq: 5
   use_amp: false
   resume_from_checkpoint: null
-  regime: full_mapping
+  regime: autoregressive
+
+  autoregressive:
+    input_window: 3
+    output_window: 1
+    teacher_forcing_epochs: 10
+    pushforward_epochs: 0
+    rollout_epochs: 90
+    max_unroll: 5
+    noise_std: 0.0
+    use_feedback_channel: true
+    lr_reset_factor: 1.0
+    rollout_mode: detached
 
 optimizer:
   weight_decay: 0.0001
@@ -79,7 +72,7 @@ scheduler:
 
 logging:
   use_mlflow: false
-  experiment_name: udeeponet_co2_pressure
+  experiment_name: pi_norne_pressure_fno
 
 seed: 42
 

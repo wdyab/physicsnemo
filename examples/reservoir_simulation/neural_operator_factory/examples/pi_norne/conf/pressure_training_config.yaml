@@ -53,10 +53,10 @@ training:
     output_window: 1
     teacher_forcing_epochs: 5
     pushforward_epochs: 0
-    rollout_epochs: 195
+    rollout_epochs: 175
     max_unroll: 5
     noise_std: 0.0
-    use_feedback_channel: false
+    use_feedback_channel: true
     lr_reset_factor: 1.0
     rollout_mode: detached
 

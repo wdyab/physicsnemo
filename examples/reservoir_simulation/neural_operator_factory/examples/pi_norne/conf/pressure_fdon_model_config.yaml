@@ -15,63 +15,60 @@
 # limitations under the License.
 
 # =============================================================================
-# Fourier-MIONet — Model Configuration (CO2 Sequestration)
+# PI-Norne — Pressure Fourier-DeepONet Model Configuration
 # =============================================================================
-# MIONet with Fourier + U-Net enhanced spatial branch.
-# Branch1 uses Fourier layers + U-Net layers for spatial encoding,
-# branch2 uses MLP for scalar inputs.
-# Width = 36, matching the paper's ~3.7M parameters.
-# Paper reference R2: sat=0.985, pres=0.986
+# 4D Fourier-DeepONet for pressure prediction on the Norne field.
+# Branch: 6 Fourier layers (pure spectral processing)
+# Trunk: 12-layer deep MLP for temporal encoding
+# Feedback channel appends previous prediction as extra input.
+#
+# Norne grid: 46 x 112 x 22, 44,431 active cells (39.2%), 65 timesteps
+# Input channels: 11 + 1 feedback = 12 during AR training
+# Output: pressure (bar)
 # =============================================================================
 
 arch:
-  dimensions: 3d
+  dimensions: 4d
   model: xdeeponet
 
   xdeeponet:
-    variant: fourier_mionet
-    width: 36
+    variant: fourier_deeponet
+    width: 64
     padding: 8
 
+    # Branch1: 6 pure Fourier layers for spatial encoding
     branch1:
       encoder:
         type: linear
-        activation_fn: relu
+        activation_fn: gelu
       layers:
-        num_fourier_layers: 3
-        num_unet_layers: 3
-        num_conv_layers: 0
-        modes1: 12
-        modes2: 12
-        kernel_size: 3
-        dropout: 0.0
-        unet_impl: custom
-        activation_fn: relu
-      internal_resolution: null
-
-    branch2:
-      encoder:
-        type: mlp
-        hidden_width: 36
-        num_layers: 3
-        activation_fn: relu
-      layers:
-        num_fourier_layers: 0
+        num_fourier_layers: 6
         num_unet_layers: 0
         num_conv_layers: 0
+        modes1: 10
+        modes2: 10
+        modes3: 6
+        kernel_size: 3
+        dropout: 0.0
+        activation_fn: gelu
 
+    # Trunk: 12-layer deep MLP for time coordinates
     trunk:
       input_type: time
-      hidden_width: 36
-      num_layers: 6
-      activation_fn: sin
-      output_activation: true
+      hidden_width: 128
+      num_layers: 12
+      activation_fn: tanh
+      output_activation: false
 
-    decoder_type: mlp
-    decoder_width: 128
+    # Decoder: temporal projection for single-step output
+    decoder_type: temporal_projection
+    decoder_width: 64
     decoder_layers: 1
     decoder_activation_fn: relu
 
+# =============================================================================
+# Pressure Loss Configuration
+# =============================================================================
 loss:
   types: [relative_l2]
   weights: [1.0]
@@ -79,11 +76,9 @@ loss:
   derivative:
     enabled: true
     weight: 0.5
-    dims: [dx]
+    dims: [dx, dy, dz]
     metric: null
 
   physics:
     mass_conservation:
       enabled: false
-      weight: 0.0
-      use_cell_volumes: false

@@ -32,7 +32,8 @@ arch:
   xdeeponet:
     width: 128
     branch2:
-      hidden_width: 128
+      encoder:
+        hidden_width: 128
     decoder_width: 128
 
 data:

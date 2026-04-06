@@ -61,7 +61,8 @@ def build_model_from_config(model_config: dict, device="cpu"):
             K = model_config.get("output_window", 3)
             model.set_output_window(K)
 
-        encoder = model_config.get("branch1_config", {}).get("encoder", "spatial")
+        b1_enc = model_config.get("branch1_config", {}).get("encoder", "spatial")
+        encoder = b1_enc.get("type", "linear") if isinstance(b1_enc, dict) else b1_enc
         model_arch_name = model_config.get(
             "model_arch_name",
             f"deeponet{'3d' if dimensions == '4d' else ''}_{variant}_{encoder}",

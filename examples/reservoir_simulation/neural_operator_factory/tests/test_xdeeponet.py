@@ -36,40 +36,50 @@ from models.xdeeponet import (
 )
 
 BRANCH1_SPATIAL = {
-    "encoder": "spatial",
-    "num_fourier_layers": 0,
-    "num_unet_layers": 1,
-    "num_conv_layers": 0,
-    "modes1": 4,
-    "modes2": 4,
-    "kernel_size": 3,
-    "dropout": 0.0,
-    "unet_impl": "custom",
-    "activation_fn": "relu",
+    "encoder": {"type": "linear", "activation_fn": "relu"},
+    "layers": {
+        "num_fourier_layers": 0,
+        "num_unet_layers": 1,
+        "num_conv_layers": 0,
+        "modes1": 4,
+        "modes2": 4,
+        "kernel_size": 3,
+        "dropout": 0.0,
+        "unet_impl": "custom",
+        "activation_fn": "relu",
+    },
 }
 BRANCH1_MLP = {
-    "encoder": "mlp",
-    "hidden_width": 32,
-    "num_layers": 2,
-    "activation_fn": "relu",
+    "encoder": {
+        "type": "mlp",
+        "hidden_width": 32,
+        "num_layers": 2,
+        "activation_fn": "relu",
+    },
+    "layers": {"num_fourier_layers": 0, "num_unet_layers": 0, "num_conv_layers": 0},
 }
 BRANCH2_SPATIAL = {
-    "encoder": "spatial",
-    "num_fourier_layers": 0,
-    "num_unet_layers": 1,
-    "num_conv_layers": 0,
-    "modes1": 4,
-    "modes2": 4,
-    "kernel_size": 3,
-    "dropout": 0.0,
-    "unet_impl": "custom",
-    "activation_fn": "relu",
+    "encoder": {"type": "linear", "activation_fn": "relu"},
+    "layers": {
+        "num_fourier_layers": 0,
+        "num_unet_layers": 1,
+        "num_conv_layers": 0,
+        "modes1": 4,
+        "modes2": 4,
+        "kernel_size": 3,
+        "dropout": 0.0,
+        "unet_impl": "custom",
+        "activation_fn": "relu",
+    },
 }
 BRANCH2_MLP = {
-    "encoder": "mlp",
-    "hidden_width": 32,
-    "num_layers": 2,
-    "activation_fn": "relu",
+    "encoder": {
+        "type": "mlp",
+        "hidden_width": 32,
+        "num_layers": 2,
+        "activation_fn": "relu",
+    },
+    "layers": {"num_fourier_layers": 0, "num_unet_layers": 0, "num_conv_layers": 0},
 }
 TRUNK = {
     "input_type": "time",
@@ -238,30 +248,34 @@ class TestDeepONetWrapper2D:
 
 
 BRANCH1_3D = {
-    "encoder": "spatial",
-    "num_fourier_layers": 0,
-    "num_unet_layers": 1,
-    "num_conv_layers": 0,
-    "modes1": 4,
-    "modes2": 4,
-    "modes3": 4,
-    "kernel_size": 3,
-    "dropout": 0.0,
-    "unet_impl": "custom",
-    "activation_fn": "relu",
+    "encoder": {"type": "linear", "activation_fn": "relu"},
+    "layers": {
+        "num_fourier_layers": 0,
+        "num_unet_layers": 1,
+        "num_conv_layers": 0,
+        "modes1": 4,
+        "modes2": 4,
+        "modes3": 4,
+        "kernel_size": 3,
+        "dropout": 0.0,
+        "unet_impl": "custom",
+        "activation_fn": "relu",
+    },
 }
 BRANCH2_3D = {
-    "encoder": "spatial",
-    "num_fourier_layers": 0,
-    "num_unet_layers": 1,
-    "num_conv_layers": 0,
-    "modes1": 4,
-    "modes2": 4,
-    "modes3": 4,
-    "kernel_size": 3,
-    "dropout": 0.0,
-    "unet_impl": "custom",
-    "activation_fn": "relu",
+    "encoder": {"type": "linear", "activation_fn": "relu"},
+    "layers": {
+        "num_fourier_layers": 0,
+        "num_unet_layers": 1,
+        "num_conv_layers": 0,
+        "modes1": 4,
+        "modes2": 4,
+        "modes3": 4,
+        "kernel_size": 3,
+        "dropout": 0.0,
+        "unet_impl": "custom",
+        "activation_fn": "relu",
+    },
 }
 
 
