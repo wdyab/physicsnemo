@@ -158,6 +158,15 @@ neural_operator_factory/
    Partial Differential Equations." *ICLR 2021*.
 6. Lu, L. et al. (2021). "Learning nonlinear operators via
    DeepONet." *Nature Machine Intelligence*, 3, 218-229.
+7. Jin, P., Meng, S. & Lu, L. (2022). "MIONet: Learning
+   multiple-input operators via tensor product."
+   *SIAM J. Scientific Computing*, 44(6), A3490-A3514.
+8. Zhu, M. et al. (2023). "Fourier-DeepONet: Fourier-enhanced
+   deep operator networks for full waveform inversion."
+   *arXiv:2305.17289*.
+9. Chandra, A. et al. (2025). "Neural operators for
+   accelerating scientific simulations and design."
+   *arXiv:2503.11031*.
 
 ## License
 

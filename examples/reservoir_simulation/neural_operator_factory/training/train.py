@@ -1146,6 +1146,7 @@ def main(cfg: DictConfig) -> None:
                             "model_arch_name": model_arch_name,
                             "variable": cfg.data.variable,
                             "in_channels": in_channels,
+                            "feedback_channel": 1 if _ar_feedback_init else None,
                         }
 
                         if model_type == "xfno":
